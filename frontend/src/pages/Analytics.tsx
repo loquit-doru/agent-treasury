@@ -29,6 +29,21 @@ import { useDashboard } from '../hooks/useDashboard';
 import { formatAmount } from '../utils/format';
 import type { AgentDecision } from '../types';
 
+/** Normalize raw EventBus events into AgentDecision shape */
+const normalizeDecision = (raw: Record<string, unknown>): AgentDecision => {
+  if (raw.action && raw.agentType) return raw as unknown as AgentDecision;
+  return {
+    id: (raw.id as string) || `${raw.type || 'event'}-${raw.timestamp || Date.now()}`,
+    agentType: (raw.agentType || raw.source || 'treasury') as AgentDecision['agentType'],
+    action: (raw.action || raw.type || 'unknown') as string,
+    reasoning: (raw.reasoning || '') as string,
+    data: (raw.data || raw.payload || {}) as Record<string, unknown>,
+    txHash: raw.txHash as string | undefined,
+    status: (raw.status || 'executed') as AgentDecision['status'],
+    timestamp: (raw.timestamp || Date.now()) as number,
+  };
+};
+
 export default function Analytics() {
   const { data } = useDashboard();
   
@@ -41,7 +56,7 @@ export default function Analytics() {
        .then(res => res.json())
        .then(data => {
           if (data.success && data.data) {
-             setHistoricalDecisions(data.data);
+             setHistoricalDecisions(data.data.map((d: Record<string, unknown>) => normalizeDecision(d)));
           }
        })
        .catch(console.error);
@@ -61,7 +76,10 @@ export default function Analytics() {
   const loans = data?.activeLoans || [];
   
   // Combine real-time decisions with historical for better metrics
-  const allDecisions = [...(data?.agentDecisions || []), ...historicalDecisions]
+  const allDecisions = [
+       ...(data?.agentDecisions || []).map(d => normalizeDecision(d as unknown as Record<string, unknown>)),
+       ...historicalDecisions,
+     ]
        // Deduplicate by ID
        .filter((v,i,a)=>a.findIndex(v2=>(v2.id===v.id))===i);
 
@@ -85,7 +103,7 @@ export default function Analytics() {
 
   // 3. Yield Performance (Compare APYs)
   const yieldData = treasury?.yieldPositions.map(p => ({
-    protocol: p.protocol.charAt(0).toUpperCase() + p.protocol.slice(1),
+    protocol: p.protocol ? p.protocol.charAt(0).toUpperCase() + p.protocol.slice(1) : 'Unknown',
     apy: p.apy,
     amount: Number(p.amount) / 1e6
   })) || [];
@@ -313,14 +331,14 @@ export default function Analytics() {
                                  </span>
                               </td>
                               <td className="px-4 py-3 text-gray-300">
-                                 {decision.action.replace(/_/g, ' ')}
+                                 {(decision.action || 'Unknown Action').replace(/_/g, ' ')}
                               </td>
                               <td className="px-4 py-3">
                                  <span className={
                                     decision.status === 'executed' ? 'text-green-400' :
                                     decision.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
                                  }>
-                                    {decision.status.charAt(0).toUpperCase() + decision.status.slice(1)}
+                                    {(decision.status || 'pending').charAt(0).toUpperCase() + (decision.status || 'pending').slice(1)}
                                  </span>
                               </td>
                            </tr>

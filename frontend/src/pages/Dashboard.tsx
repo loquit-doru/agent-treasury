@@ -72,10 +72,26 @@ export default function Dashboard() {
   // Historical balance data for the chart (last 24 updates)
   const [balanceHistory, setBalanceHistory] = useState<{ time: string, balance: number }[]>([]);
 
+  // Normalize raw EventBus events ({ type, source, payload }) into AgentDecision shape
+  const normalizeDecision = (raw: Record<string, unknown>): AgentDecision => {
+    if (raw.action && raw.agentType) return raw as unknown as AgentDecision;
+    return {
+      id: (raw.id as string) || `${raw.type || 'event'}-${raw.timestamp || Date.now()}`,
+      agentType: (raw.agentType || raw.source || 'treasury') as AgentDecision['agentType'],
+      action: (raw.action || raw.type || 'unknown') as string,
+      reasoning: (raw.reasoning || '') as string,
+      data: (raw.data || raw.payload || {}) as Record<string, unknown>,
+      txHash: raw.txHash as string | undefined,
+      status: (raw.status || 'executed') as AgentDecision['status'],
+      timestamp: (raw.timestamp || Date.now()) as number,
+    };
+  };
+
   // Merge REST + WS data
   useEffect(() => {
     if (data) {
-      setDecisions(data.agentDecisions || []);
+      const normalized = (data.agentDecisions || []).map((d: AgentDecision) => normalizeDecision(d as unknown as Record<string, unknown>));
+      setDecisions(normalized);
       setAgentStatus({
         treasury: data.agentStatus?.treasury || 'idle',
         credit: data.agentStatus?.credit || 'idle',
@@ -98,7 +114,8 @@ export default function Dashboard() {
       msg.type === 'dashboard:initial' ||
       msg.type === 'dashboard:update'
     ) {
-      setDecisions(msg.data.agentDecisions || []);
+      const wsNormalized = (msg.data.agentDecisions || []).map((d: AgentDecision) => normalizeDecision(d as unknown as Record<string, unknown>));
+      setDecisions(wsNormalized);
       setAgentStatus({
         treasury: msg.data.agentStatus?.treasury || 'idle',
         credit: msg.data.agentStatus?.credit || 'idle',
@@ -116,7 +133,7 @@ export default function Dashboard() {
     }
     if (msg.type === 'agent:event') {
       // Append live event as decision
-      const event = msg.data as unknown as AgentDecision;
+      const event = normalizeDecision(msg.data as unknown as Record<string, unknown>);
       if (event?.id) {
         setDecisions((prev) => [...prev, event].slice(-50));
       }
@@ -429,7 +446,7 @@ export default function Dashboard() {
                            </span>
                         </div>
                         <p className="text-sm font-medium text-gray-200">
-                           {decision.action.replace(/_/g, ' ')}
+                           {(decision.action || 'Unknown Action').replace(/_/g, ' ')}
                         </p>
                         <p className="text-xs text-gray-400 leading-relaxed mt-1">
                           {decision.reasoning}

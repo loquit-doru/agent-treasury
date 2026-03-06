@@ -54,7 +54,8 @@ export function LiveLogs({ decisions = [] }: LiveLogsProps) {
     }
   };
 
-  const getActionColor = (action: string) => {
+  const getActionColor = (action: string | undefined) => {
+    if (!action) return 'text-gray-400';
     if (action.includes('yield') || action.includes('invest')) return 'text-green-400';
     if (action.includes('borrow') || action.includes('credit')) return 'text-blue-400';
     if (action.includes('withdraw')) return 'text-yellow-400';
@@ -90,15 +91,15 @@ export function LiveLogs({ decisions = [] }: LiveLogsProps) {
               >
                 <div className="flex items-start gap-3">
                   <div className="mt-0.5">
-                    {getAgentIcon(decision.agentType)}
+                    {getAgentIcon(decision.agentType || 'treasury')}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <p className={`text-sm font-medium ${getActionColor(decision.action)}`}>
-                        {decision.action}
+                        {decision.action || 'event'}
                       </p>
                       <div className="flex items-center gap-2">
-                        {getStatusIcon(decision.status)}
+                        {getStatusIcon(decision.status || 'pending')}
                         {expandedId === decision.id ? (
                           <ChevronUp className="w-4 h-4 text-gray-500" />
                         ) : (
@@ -128,7 +129,7 @@ export function LiveLogs({ decisions = [] }: LiveLogsProps) {
                             </a>
                           </p>
                         )}
-                        {Object.keys(decision.data).length > 0 && (
+                        {decision.data && Object.keys(decision.data).length > 0 && (
                           <div className="mt-2">
                             <p className="text-xs text-gray-500 mb-1">Data:</p>
                             <pre className="text-xs text-gray-400 bg-gray-900/50 p-2 rounded overflow-x-auto">
