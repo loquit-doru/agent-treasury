@@ -6,6 +6,8 @@ import {
   TrendingUp,
   Activity,
   Zap,
+  History,
+  Server,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -32,6 +34,7 @@ export default function Analytics() {
   
   // Need to fetch full decision log for historical agent performance
   const [historicalDecisions, setHistoricalDecisions] = useState<AgentDecision[]>([]);
+  const [opportunities, setOpportunities] = useState<any[]>([]);
   
   useEffect(() => {
      fetch('/api/decisions?limit=100')
@@ -39,6 +42,15 @@ export default function Analytics() {
        .then(data => {
           if (data.success && data.data) {
              setHistoricalDecisions(data.data);
+          }
+       })
+       .catch(console.error);
+
+     fetch('/api/yield/opportunities')
+       .then(res => res.json())
+       .then(data => {
+          if (data.success && data.data) {
+             setOpportunities(data.data);
           }
        })
        .catch(console.error);
@@ -266,6 +278,101 @@ export default function Analytics() {
               )}
            </div>
         </Panel>
+      </div>
+
+      {/* Data Tables */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+         {/* Agent Decision History */}
+         <Panel title="Agent Decision History" icon={<History className="w-4 h-4 text-cyan-400" />}>
+            <div className="overflow-x-auto max-h-[400px] custom-scrollbar">
+               <table className="w-full text-sm text-left">
+                  <thead className="text-xs text-gray-500 uppercase bg-gray-950/50 sticky top-0">
+                     <tr>
+                        <th className="px-4 py-3 font-semibold">Time</th>
+                        <th className="px-4 py-3 font-semibold">Agent</th>
+                        <th className="px-4 py-3 font-semibold">Action</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                     </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                     {allDecisions.length === 0 ? (
+                        <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No decisions recorded</td></tr>
+                     ) : (
+                        allDecisions.slice(0, 50).reverse().map((decision, i) => (
+                           <tr key={decision.id || i} className="hover:bg-gray-800/30 transition-colors">
+                              <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                                 {new Date(decision.timestamp).toLocaleTimeString()}
+                              </td>
+                              <td className="px-4 py-3">
+                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                    decision.agentType === 'treasury' 
+                                      ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/20' 
+                                      : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                 }`}>
+                                    {decision.agentType}
+                                 </span>
+                              </td>
+                              <td className="px-4 py-3 text-gray-300">
+                                 {decision.action.replace(/_/g, ' ')}
+                              </td>
+                              <td className="px-4 py-3">
+                                 <span className={
+                                    decision.status === 'executed' ? 'text-green-400' :
+                                    decision.status === 'failed' ? 'text-red-400' : 'text-yellow-400'
+                                 }>
+                                    {decision.status.charAt(0).toUpperCase() + decision.status.slice(1)}
+                                 </span>
+                              </td>
+                           </tr>
+                        ))
+                     )}
+                  </tbody>
+               </table>
+            </div>
+         </Panel>
+
+         {/* Yield Opportunities */}
+         <Panel title="Yield Opportunities" icon={<Server className="w-4 h-4 text-purple-400" />}>
+            <div className="overflow-x-auto max-h-[400px] custom-scrollbar">
+               <table className="w-full text-sm text-left">
+                  <thead className="text-xs text-gray-500 uppercase bg-gray-950/50 sticky top-0">
+                     <tr>
+                        <th className="px-4 py-3 font-semibold">Protocol</th>
+                        <th className="px-4 py-3 font-semibold">Strategy</th>
+                        <th className="px-4 py-3 font-semibold text-right">APY</th>
+                        <th className="px-4 py-3 font-semibold text-right">Risk Score</th>
+                     </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                     {opportunities.length === 0 ? (
+                        <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">No opportunities detected</td></tr>
+                     ) : (
+                        opportunities.map((opp, i) => (
+                           <tr key={i} className="hover:bg-gray-800/30 transition-colors">
+                              <td className="px-4 py-3 font-medium text-white capitalize">
+                                 {opp.protocol}
+                              </td>
+                              <td className="px-4 py-3 text-gray-400">
+                                 {opp.strategy.replace(/_/g, ' ')}
+                              </td>
+                              <td className="px-4 py-3 text-right text-purple-400 font-medium">
+                                 {(opp.apy * 100).toFixed(2)}%
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    opp.riskScore < 30 ? 'text-green-400' :
+                                    opp.riskScore < 60 ? 'text-yellow-400' : 'text-red-400'
+                                 }`}>
+                                    {opp.riskScore}/100
+                                 </span>
+                              </td>
+                           </tr>
+                        ))
+                     )}
+                  </tbody>
+               </table>
+            </div>
+         </Panel>
       </div>
     </div>
   );

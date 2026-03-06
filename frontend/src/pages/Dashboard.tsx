@@ -17,10 +17,14 @@ import { useDashboard } from '../hooks/useDashboard';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatAmount, formatPercentage } from '../utils/format';
 import type {
+  AgentStatusData,
   AgentDecision,
   DashboardData,
-  TreasuryState
+  TreasuryState,
+  YieldPosition,
+  PendingTransaction
 } from '../types';
+import { AgentStatus } from '../components/AgentStatus';
 import {
   AreaChart,
   Area,
@@ -57,9 +61,13 @@ const pauseAgents = async () => {
 
 export default function Dashboard() {
   const { data, isLoading, error, refresh } = useDashboard();
-  const { lastMessage } = useWebSocket(WS_URL);
+  const { isConnected, lastMessage } = useWebSocket(WS_URL);
 
   const [decisions, setDecisions] = useState<AgentDecision[]>([]);
+  const [agentStatus, setAgentStatus] = useState<AgentStatusData>({
+    treasury: 'idle',
+    credit: 'idle',
+  });
   
   // Historical balance data for the chart (last 24 updates)
   const [balanceHistory, setBalanceHistory] = useState<{ time: string, balance: number }[]>([]);
@@ -68,6 +76,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (data) {
       setDecisions(data.agentDecisions || []);
+      setAgentStatus({
+        treasury: data.agentStatus?.treasury || 'idle',
+        credit: data.agentStatus?.credit || 'idle',
+      });
       // Initialize balance history with current if empty
       if (balanceHistory.length === 0 && data.treasury) {
         setBalanceHistory([{ 
@@ -87,6 +99,10 @@ export default function Dashboard() {
       msg.type === 'dashboard:update'
     ) {
       setDecisions(msg.data.agentDecisions || []);
+      setAgentStatus({
+        treasury: msg.data.agentStatus?.treasury || 'idle',
+        credit: msg.data.agentStatus?.credit || 'idle',
+      });
       
       if (msg.data.treasury) {
         const newBalance = Number(msg.data.treasury.balance) / 1e6;
@@ -135,9 +151,13 @@ export default function Dashboard() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
-         <div>
+         <div className="flex flex-col gap-1">
             <h2 className="text-2xl font-bold text-white tracking-tight">Mission Control</h2>
-            <p className="text-sm text-gray-400">AgentTreasury real-time overview and health</p>
+            <div className="flex items-center gap-3">
+               <p className="text-sm text-gray-400">AgentTreasury real-time overview and health</p>
+               <div className="h-4 w-px bg-gray-800" />
+               <AgentStatus status={agentStatus} wsConnected={isConnected} />
+            </div>
          </div>
          {/* Quick Actions Panel */}
          <div className="flex gap-3">
@@ -149,8 +169,12 @@ export default function Dashboard() {
                Sync Treasury
              </button>
              <button
-               onClick={pauseAgents}
-               className="inline-flex items-center gap-2 rounded-lg bg-red-950/30 border border-red-900/50 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-900/40 hover:text-red-300 transition-colors"
+               onClick={() => {
+                 if (window.confirm('Are you sure you want to pause all agent activities? This action requires multi-sig to resume.')) {
+                   pauseAgents();
+                 }
+               }}
+               className="inline-flex items-center gap-2 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-2 text-sm font-medium text-red-500 hover:bg-red-500/20 transition-all hover:scale-105"
              >
                <PauseCircle className="w-4 h-4" />
                Emergency Pause
@@ -175,15 +199,15 @@ export default function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
-          icon={<DollarSign className="w-5 h-5 text-green-400" />}
+          icon={<DollarSign className="w-5 h-5 text-cyan-400" />}
           label="Treasury Balance"
-          value={`${formatAmount(treasury.balance)} USDt`}
+          value={`$${(Number(treasury.balance) / 1e6).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} USDt`}
           sub="Vault holdings"
         />
         <KPICard
           icon={<BarChart3 className="w-5 h-5 text-blue-400" />}
           label="Daily Volume"
-          value={`${formatAmount(treasury.dailyVolume)} USDt`}
+          value={`$${(Number(treasury.dailyVolume) / 1e6).toLocaleString('en-US')} USDt`}
           sub="In / Out today"
         />
         <KPICard
@@ -194,7 +218,7 @@ export default function Dashboard() {
             treasury.yieldPositions.length > 0
               ? `Avg ${formatPercentage(
                   treasury.yieldPositions.reduce(
-                    (s, p) => s + p.apy,
+                    (s: number, p: YieldPosition) => s + p.apy,
                     0,
                   ) / treasury.yieldPositions.length,
                 )} APY`
@@ -218,18 +242,18 @@ export default function Dashboard() {
                 <AreaChart data={balanceHistory} margin={{ top: 5, right: 0, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#4ade80" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#4ade80" stopOpacity={0}/>
+                      <stop offset="5%" stopColor="#22d3ee" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#22d3ee" stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1f2937" />
                   <XAxis dataKey="time" stroke="#4b5563" fontSize={12} tickLine={false} axisLine={false} />
                   <YAxis stroke="#4b5563" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `$${value}`} />
                   <Tooltip 
-                    contentStyle={{ backgroundColor: '#111827', borderColor: '#1f2937', borderRadius: '0.5rem', color: '#fff' }}
-                    itemStyle={{ color: '#4ade80' }}
+                    contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', borderRadius: '0.5rem', color: '#fff' }}
+                    itemStyle={{ color: '#22d3ee' }}
                   />
-                  <Area type="monotone" dataKey="balance" stroke="#4ade80" strokeWidth={2} fillOpacity={1} fill="url(#colorBalance)" />
+                  <Area type="monotone" dataKey="balance" stroke="#22d3ee" strokeWidth={2} fillOpacity={1} fill="url(#colorBalance)" />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -248,8 +272,8 @@ export default function Dashboard() {
                 <XAxis dataKey="name" stroke="#4b5563" fontSize={11} tickLine={false} axisLine={false} angle={-15} textAnchor="end" />
                 <YAxis stroke="#4b5563" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip 
-                  cursor={{ fill: '#1f2937', opacity: 0.4 }}
-                  contentStyle={{ backgroundColor: '#111827', borderColor: '#1f2937', borderRadius: '0.5rem', color: '#fff' }}
+                  cursor={{ fill: '#374151', opacity: 0.4 }}
+                  contentStyle={{ backgroundColor: '#1f2937', borderColor: '#374151', borderRadius: '0.5rem', color: '#fff' }}
                 />
                 <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                   {scoreDistribution.map((entry, index) => (
@@ -268,7 +292,7 @@ export default function Dashboard() {
         <div className="lg:col-span-2 space-y-6">
           
           {/* Active Loans */}
-          <Panel title="Active Loans" icon={<Users className="w-4 h-4 text-yellow-400" />}>
+          <Panel title="Active Loans" icon={<Users className="w-4 h-4 text-emerald-400" />}>
             {(!data?.activeLoans || data.activeLoans.length === 0) ? (
               <EmptyState text="No active loans" />
             ) : (
@@ -309,12 +333,12 @@ export default function Dashboard() {
           </Panel>
 
           {/* Pending Transactions */}
-          <Panel title="Pending Transactions (Multi-sig)" icon={<Wallet className="w-4 h-4 text-green-400" />}>
+          <Panel title="Pending Transactions (Multi-sig)" icon={<Wallet className="w-4 h-4 text-cyan-400" />}>
             {treasury.pendingTransactions.length === 0 ? (
               <EmptyState text="No pending transactions" />
             ) : (
               <div className="divide-y divide-gray-800">
-                {treasury.pendingTransactions.map((tx) => (
+                {treasury.pendingTransactions.map((tx: PendingTransaction) => (
                   <div
                     key={tx.txHash}
                     className="py-4 flex items-center justify-between hover:bg-gray-800/10 transition-colors px-2 rounded-lg"
@@ -350,7 +374,7 @@ export default function Dashboard() {
               <EmptyState text="No active yield positions" />
             ) : (
               <div className="divide-y divide-gray-800">
-                {treasury.yieldPositions.map((pos, i) => (
+                {treasury.yieldPositions.map((pos: YieldPosition, i: number) => (
                   <div
                     key={i}
                     className="py-4 flex items-center justify-between hover:bg-gray-800/10 transition-colors px-2 rounded-lg"
@@ -387,16 +411,16 @@ export default function Dashboard() {
                 {decisions.length === 0 ? (
                    <EmptyState text="Waiting for agent actions..." />
                 ) : (
-                  decisions.slice().reverse().map((decision, i) => (
+                  decisions.slice(-10).reverse().map((decision, i) => (
                     <div key={decision.id || i} className="relative">
                       {/* Timeline dot */}
                       <span className={`absolute -left-[21px] top-1 flex h-2.5 w-2.5 rounded-full ring-4 ring-gray-950 ${
-                         decision.agentType === 'treasury' ? 'bg-green-500' : 'bg-blue-500'
+                         decision.agentType === 'treasury' ? 'bg-cyan-500' : 'bg-emerald-500'
                       }`} />
                       <div className="flex flex-col gap-1">
                         <div className="flex items-center justify-between">
                            <span className={`text-xs font-semibold uppercase tracking-wider ${
-                             decision.agentType === 'treasury' ? 'text-green-400' : 'text-blue-400'
+                             decision.agentType === 'treasury' ? 'text-cyan-400' : 'text-emerald-400'
                            }`}>
                              {decision.agentType}
                            </span>
@@ -461,7 +485,7 @@ function KPICard({
   sub: string;
 }) {
   return (
-    <div className="bg-gray-900/60 border border-gray-800 rounded-xl p-5 hover:bg-gray-800/50 transition-colors">
+    <div className="bg-gray-800 border border-gray-700 rounded-xl p-5 hover:bg-gray-750 transition-colors shadow-sm">
       <div className="flex items-center gap-3 mb-3">
         {icon}
         <span className="text-xs text-gray-400 uppercase tracking-widest font-semibold">
@@ -484,8 +508,8 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <div className="bg-gray-900/50 border border-gray-800 rounded-xl overflow-hidden shadow-sm flex flex-col">
-      <div className="px-5 py-4 border-b border-gray-800/80 flex items-center gap-2 bg-gray-950/20">
+    <div className="bg-gray-800 border border-gray-700 rounded-xl overflow-hidden shadow-sm flex flex-col">
+      <div className="px-5 py-4 border-b border-gray-700 flex items-center gap-2 bg-gray-800/80">
         {icon}
         <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
       </div>

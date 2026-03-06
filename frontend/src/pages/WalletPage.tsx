@@ -10,7 +10,7 @@ import {
   TrendingDown,
   Upload,
 } from 'lucide-react';
-import { WalletConnect } from '../components/WalletConnect';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { formatAmount, formatPercentage } from '../utils/format';
 import type { CreditProfile, Loan } from '../types';
 
@@ -40,6 +40,15 @@ export default function WalletPage() {
   const [depositAmount, setDepositAmount] = useState('');
   const [isDepositing, setIsDepositing] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  
+  const [lookupAddress, setLookupAddress] = useState('');
+
+  // Sync lookup address with connected address initially
+  useEffect(() => {
+    if (address && !lookupAddress) {
+      setLookupAddress(address);
+    }
+  }, [address]);
 
   // Fetch initial user data (only if profile exists already)
   useEffect(() => {
@@ -49,7 +58,8 @@ export default function WalletPage() {
         .then(data => {
             if (data.success && data.data && data.data.exists) {
                 setCreditProfile(data.data as CreditProfile);
-                fetchLoans(address);
+                setLookupAddress(address);
+                fetchLoans();
             }
         })
         .catch(console.error);
@@ -59,9 +69,9 @@ export default function WalletPage() {
     }
   }, [address, isConnected]);
 
-  const fetchLoans = async (userAddress: string) => {
+  const fetchLoans = async () => {
     try {
-        const res = await fetch(`/api/credit/${userAddress}/loans`);
+        const res = await fetch(`/api/loans`);
         const data = await res.json();
         if (data.success) {
             setLoans(data.data as Loan[]);
@@ -72,14 +82,14 @@ export default function WalletPage() {
   };
 
   const checkCreditScore = async () => {
-    if (!address) return;
+    if (!lookupAddress) return;
     setIsCheckingCredit(true);
     try {
-      const res = await fetch(`/api/credit/${address}/evaluate`, { method: 'POST' });
+      const res = await fetch(`/api/credit/${lookupAddress}/evaluate`, { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setCreditProfile(data.data as CreditProfile);
-        fetchLoans(address);
+        fetchLoans();
       }
     } catch (err) {
       console.error(err);
@@ -187,7 +197,7 @@ export default function WalletPage() {
                 ) : (
                   <div className="py-8 flex flex-col items-center justify-center text-center">
                      <p className="text-sm text-gray-500 mb-4">Connect wallet to view balances</p>
-                     <WalletConnect />
+                     <ConnectButton />
                   </div>
                 )}
             </div>
@@ -248,18 +258,29 @@ export default function WalletPage() {
                       <Activity className="w-12 h-12 text-gray-700 mb-4" />
                       <h3 className="text-lg font-semibold text-white mb-2">Credit System Locked</h3>
                       <p className="text-sm text-gray-400 max-w-sm mx-auto mb-6">Connect your wallet to evaluate your on-chain history and access uncollateralized credit lines.</p>
-                      <WalletConnect />
+                      <ConnectButton />
                    </div>
                 ) : !creditProfile ? (
                    <div className="h-full min-h-[250px] flex flex-col items-center justify-center text-center">
                       <div className="w-16 h-16 rounded-full bg-blue-950/30 border border-blue-900/50 flex items-center justify-center mb-6">
                          <Activity className="w-6 h-6 text-blue-400" />
                       </div>
-                      <h3 className="text-xl font-bold text-white mb-2">Check Your On-chain Credit</h3>
-                      <p className="text-sm text-gray-400 max-w-sm mx-auto mb-6">Our Credit Agent will analyze your on-chain history and generate a score instantly.</p>
+                      <h3 className="text-xl font-bold text-white mb-2">Check On-chain Credit Profile</h3>
+                      <p className="text-sm text-gray-400 max-w-sm mx-auto mb-6">Our Credit Agent will analyze on-chain history and generate a score instantly.</p>
+                      
+                      <div className="flex w-full max-w-md mx-auto items-center gap-2 mb-4">
+                        <input
+                           type="text"
+                           value={lookupAddress}
+                           onChange={(e) => setLookupAddress(e.target.value)}
+                           placeholder="Enter 0x..."
+                           className="flex-1 bg-gray-950 border border-gray-800 rounded-xl px-4 py-3 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 font-mono"
+                        />
+                      </div>
+
                       <button
                         onClick={checkCreditScore}
-                        disabled={isCheckingCredit}
+                        disabled={isCheckingCredit || !lookupAddress}
                         className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-500 px-6 py-3 text-sm font-bold text-white hover:bg-blue-400 transition-all shadow-[0_0_20px_-5px_var(--color-blue-500)] disabled:opacity-50"
                       >
                          {isCheckingCredit ? (
@@ -331,13 +352,22 @@ export default function WalletPage() {
                          </div>
                          
                          <div className="pt-2">
-                            <button
-                              onClick={checkCreditScore}
-                              disabled={isCheckingCredit}
-                              className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center sm:justify-start gap-1"
-                            >
-                               <RefreshCw className={`w-3 h-3 ${isCheckingCredit ? 'animate-spin' : ''}`} /> Update Profile
-                            </button>
+                            <div className="flex w-full items-center gap-2 mb-2 sm:mb-0">
+                               <input
+                                  type="text"
+                                  value={lookupAddress}
+                                  onChange={(e) => setLookupAddress(e.target.value)}
+                                  placeholder="0x..."
+                                  className="w-48 bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder:text-gray-600 focus:outline-none focus:border-blue-500/50 font-mono"
+                               />
+                               <button
+                                 onClick={checkCreditScore}
+                                 disabled={isCheckingCredit || !lookupAddress}
+                                 className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center sm:justify-start gap-1 p-2"
+                               >
+                                  <RefreshCw className={`w-3 h-3 ${isCheckingCredit ? 'animate-spin' : ''}`} /> Evaluate
+                               </button>
+                            </div>
                          </div>
                       </div>
                    </div>

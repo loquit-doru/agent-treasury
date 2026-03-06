@@ -4,7 +4,7 @@ import {
   Zap,
   LineChart,
   ArrowRight,
-  TrendingUp,
+  Activity,
 } from 'lucide-react';
 
 export default function Landing() {
@@ -42,11 +42,11 @@ export default function Landing() {
           </div>
 
           <h2 className="text-5xl sm:text-7xl font-extrabold tracking-tight">
-            Autonomous CFO for <span className="text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-emerald-600">DAOs</span>
+            AgentTreasury CORE <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-emerald-600">Autonomous CFO for DAOs</span>
           </h2>
           
           <p className="text-xl sm:text-2xl text-gray-400 max-w-2xl mx-auto leading-relaxed">
-            AI agents that manage your treasury, generate yield, and provide on-chain credit — powered by <span className="text-white font-medium">Tether WDK</span>.
+            Multi-agent treasury management with on-chain credit scoring
           </p>
 
           <div className="pt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
@@ -61,7 +61,7 @@ export default function Landing() {
 
           {/* Tech stack badges */}
           <div className="pt-16 pb-8 flex flex-wrap items-center justify-center gap-4 opacity-70">
-            {['Tether WDK', 'OpenClaw', 'Foundry', 'GPT-4'].map((tech) => (
+            {['Built with Tether WDK', 'Powered by OpenClaw'].map((tech) => (
               <span key={tech} className="px-4 py-2 rounded-lg bg-gray-900 border border-gray-800 text-sm font-medium text-gray-300">
                 {tech}
               </span>
@@ -80,19 +80,19 @@ export default function Landing() {
 
            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
              <FeatureCard 
-               icon={<Shield className="w-8 h-8 text-green-400" />}
-               title="Treasury Management"
+               icon={<Shield className="w-8 h-8 text-cyan-400" />}
+               title="Treasury Agent"
                description="Multi-sig security, intelligent timelocks, and dynamic risk limits executed autonomously."
              />
              <FeatureCard 
-               icon={<TrendingUp className="w-8 h-8 text-purple-400" />}
-               title="Yield Optimization"
-               description="Aave integration and auto-rebalancing to ensure your assets are always capital-efficient."
+               icon={<LineChart className="w-8 h-8 text-emerald-400" />}
+               title="Credit Agent"
+               description="On-chain history evaluation across 3 dynamic tiers to authorize instant, uncollateralized loans."
              />
              <FeatureCard 
-               icon={<LineChart className="w-8 h-8 text-blue-400" />}
-               title="Credit Scoring"
-               description="On-chain history evaluation across 3 dynamic tiers to authorize instant, uncollateralized loans."
+               icon={<Activity className="w-8 h-8 text-blue-400" />}
+               title="Real-time Dashboard"
+               description="Monitor agent decisions, treasury balances, and active yield positions via WebSockets."
              />
            </div>
          </div>
