@@ -4,13 +4,12 @@
  */
 
 import { ethers } from 'ethers';
-import WDK from '@tetherto/wdk';
+import type WDK from '@tetherto/wdk';
 import OpenAI from 'openai';
 import EventBus from '../orchestrator/EventBus';
 import { getAaveLending } from '../services/wdk';
 import logger from '../utils/logger';
 import {
-  AgentType,
   AgentStatus,
   AgentDecision,
   TreasuryState,
@@ -36,12 +35,6 @@ const TREASURY_VAULT_ABI = [
   'event WithdrawExecuted(bytes32 indexed txHash, address indexed to, uint256 amount)',
 ];
 
-const ERC20_ABI = [
-  'function balanceOf(address account) view returns (uint256)',
-  'function decimals() view returns (uint8)',
-  'function symbol() view returns (string)',
-];
-
 // Security constraints
 const CONSTRAINTS = {
   MAX_DAILY_VOLUME: ethers.parseUnits('10000', 6), // 10k USDt
@@ -55,10 +48,8 @@ const CONSTRAINTS = {
 export class TreasuryAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private wdk: WDK;
   private wdkAccount: any; // WDK account type
   private vaultContract: ethers.Contract;
-  private usdtContract: ethers.Contract;
   private openai: OpenAI;
   private config: AgentConfig;
   private lastState: TreasuryState | null = null;
@@ -67,12 +58,11 @@ export class TreasuryAgent {
   constructor(
     config: AgentConfig,
     provider: ethers.Provider,
-    wdk: WDK,
+    _wdk: WDK,
     wdkAccount: any,
   ) {
     this.config = config;
     this.provider = provider;
-    this.wdk = wdk;
     this.wdkAccount = wdkAccount;
     
     this.openai = new OpenAI({
@@ -85,12 +75,6 @@ export class TreasuryAgent {
       config.treasuryVaultAddress,
       TREASURY_VAULT_ABI,
       provider // read-only; writes go through WDK
-    );
-
-    this.usdtContract = new ethers.Contract(
-      config.usdtAddress,
-      ERC20_ABI,
-      provider
     );
 
     this.setupEventListeners();

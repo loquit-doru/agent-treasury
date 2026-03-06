@@ -4,12 +4,11 @@
  */
 
 import { ethers } from 'ethers';
-import WDK from '@tetherto/wdk';
+import type WDK from '@tetherto/wdk';
 import OpenAI from 'openai';
 import EventBus from '../orchestrator/EventBus';
 import logger from '../utils/logger';
 import {
-  AgentType,
   AgentStatus,
   AgentDecision,
   CreditProfile,
@@ -47,7 +46,6 @@ const CREDIT_TIERS: CreditTier[] = [
 export class CreditAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private wdk: WDK;
   private wdkAccount: any;
   private creditContract: ethers.Contract;
   private openai: OpenAI;
@@ -59,12 +57,11 @@ export class CreditAgent {
   constructor(
     config: AgentConfig,
     provider: ethers.Provider,
-    wdk: WDK,
+    _wdk: WDK,
     wdkAccount: any,
   ) {
     this.config = config;
     this.provider = provider;
-    this.wdk = wdk;
     this.wdkAccount = wdkAccount;
     
     this.openai = new OpenAI({

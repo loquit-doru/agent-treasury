@@ -4,10 +4,8 @@ import { BrowserProvider, Contract, parseUnits } from 'ethers';
 import {
   Wallet,
   Activity,
-  ArrowRight,
   RefreshCw,
   CheckCircle2,
-  AlertTriangle,
   History,
   TrendingDown,
   Upload,

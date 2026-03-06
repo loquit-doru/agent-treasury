@@ -68,7 +68,7 @@ let treasuryAgent: TreasuryAgent | null = null;
 let creditAgent: CreditAgent | null = null;
 
 // WebSocket clients
-const wsClients: Set<WebSocket> = new Set();
+const wsClients = new Set<import('ws').WebSocket>();
 
 /**
  * Initialize agents
@@ -165,7 +165,7 @@ async function getDashboardData(): Promise<DashboardData> {
 // ==================== API Routes ====================
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({
     status: 'healthy',
     agents: {
@@ -177,7 +177,7 @@ app.get('/health', (req, res) => {
 });
 
 // Get dashboard data
-app.get('/api/dashboard', async (req, res) => {
+app.get('/api/dashboard', async (_req, res) => {
   try {
     const data = await getDashboardData();
     res.json({ success: true, data });
@@ -188,7 +188,7 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 // Get treasury state
-app.get('/api/treasury', async (req, res) => {
+app.get('/api/treasury', async (_req, res) => {
   try {
     const state = treasuryAgent?.getState();
     res.json({ success: true, data: state });
@@ -198,7 +198,7 @@ app.get('/api/treasury', async (req, res) => {
 });
 
 // Sync treasury state
-app.post('/api/treasury/sync', async (req, res) => {
+app.post('/api/treasury/sync', async (_req, res) => {
   try {
     const state = await treasuryAgent?.syncState();
     res.json({ success: true, data: state });
@@ -214,7 +214,8 @@ app.get('/api/credit/:address', async (req, res) => {
     const profile = await creditAgent?.getProfile(address);
     
     if (!profile) {
-      return res.status(404).json({ success: false, error: 'Profile not found' });
+      res.status(404).json({ success: false, error: 'Profile not found' });
+      return;
     }
     
     res.json({ success: true, data: profile });
@@ -246,7 +247,7 @@ app.get('/api/credit/:address/loans', async (req, res) => {
 });
 
 // Get all active loans
-app.get('/api/loans', async (req, res) => {
+app.get('/api/loans', async (_req, res) => {
   try {
     const loans = creditAgent?.getAllActiveLoans() || [];
     res.json({ success: true, data: loans });
@@ -271,7 +272,7 @@ app.get('/api/decisions', async (req, res) => {
 });
 
 // Get yield opportunities
-app.get('/api/yield/opportunities', async (req, res) => {
+app.get('/api/yield/opportunities', async (_req, res) => {
   try {
     const opportunities = await treasuryAgent?.fetchYieldOpportunities();
     res.json({ success: true, data: opportunities });
@@ -281,7 +282,7 @@ app.get('/api/yield/opportunities', async (req, res) => {
 });
 
 // Emergency pause
-app.post('/api/emergency/pause', async (req, res) => {
+app.post('/api/emergency/pause', async (_req, res) => {
   try {
     await treasuryAgent?.emergencyPause();
     res.json({ success: true, message: 'Emergency pause activated' });

@@ -16,6 +16,7 @@ export interface AgentDecision {
   data: Record<string, unknown>;
   txHash?: string;
   status: 'pending' | 'executed' | 'failed';
+  [key: string]: unknown;
 }
 
 // Treasury Types

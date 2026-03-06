@@ -17,7 +17,6 @@ import { useDashboard } from '../hooks/useDashboard';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatAmount, formatPercentage } from '../utils/format';
 import type {
-  AgentStatusData,
   AgentDecision,
   DashboardData,
   TreasuryState
@@ -56,7 +55,7 @@ const pauseAgents = async () => {
   }
 };
 
-
+export default function Dashboard() {
   const { data, isLoading, error, refresh } = useDashboard();
   const { lastMessage } = useWebSocket(WS_URL);
 

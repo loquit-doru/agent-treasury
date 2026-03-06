@@ -34,13 +34,13 @@ export async function initWdk(cfg: WdkConfig): Promise<WDK> {
   wdk.registerWallet('ethereum', WalletManagerEvm, {
     rpcUrl: cfg.rpcUrl,
     chainId: cfg.chainId,
-  });
+  } as any);
 
   // Register Aave lending protocol if pool address provided
   if (cfg.aavePoolAddress) {
     wdk.registerProtocol('ethereum', 'aave', LendingAaveEvm, {
       poolAddress: cfg.aavePoolAddress,
-    });
+    } as any);
     logger.info('Aave lending protocol registered');
   }
 
@@ -48,7 +48,7 @@ export async function initWdk(cfg: WdkConfig): Promise<WDK> {
 
   // Log wallet address
   const account = await wdk.getAccount('ethereum', 0);
-  const address = account.address ?? '(unknown)';
+  const address = (account as any).address ?? '(unknown)';
   logger.info(`WDK wallet ready: ${address}`);
 
   return wdk;
