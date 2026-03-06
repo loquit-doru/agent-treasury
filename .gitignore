@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+out/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+coverage/
+.nyc_output/
+
+# Hardhat/Foundry
+cache/
+artifacts/
+forge-cache/
+out/
+
+# TypeScript
+*.tsbuildinfo
+
+# Misc
+.cache/
+.temp/
+tmp/
