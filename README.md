@@ -1,240 +1,173 @@
-# 🏦 AgentTreasury CORE
+# AgentTreasury CORE
 
-**Autonomous CFO for DAOs** - A multi-agent system for treasury management, yield generation, and on-chain credit scoring.
+**Autonomous CFO for DAOs** — Multi-agent treasury management with on-chain credit scoring.
 
-Built for **Tether Hackathon Galactica: WDK Edition 1** (February 2026)
+Built for **Tether Hackathon Galactica: WDK Edition 1** (March 2-22, 2026)
 
-## 🎯 Overview
+## Overview
 
-AgentTreasury CORE is an autonomous treasury management system that:
+AgentTreasury CORE is a 2-agent autonomous system that manages DAO funds:
 
-- **Manages DAO funds** with security-first design (multi-sig, timelock, daily limits)
-- **Generates yield** through DeFi protocols (Aave/Compound)
-- **Provides on-chain credit** with AI-powered scoring
-- **Operates 24/7** with autonomous agents making data-driven decisions
+- **Treasury Agent** — yield optimization (Aave via WDK), multi-sig withdrawal proposals, emergency pause, daily volume limits
+- **Credit Agent** — on-chain credit scoring (500-1000), 3-tier lending (5%/10%/15% APR), default detection
 
-## 🏗️ Architecture
+Both agents use **Tether WDK** for self-custodial wallet management and **OpenClaw** agent workspace for behavioral governance.
+
+### Key integrations
+
+| Technology | Role |
+|-----------|------|
+| **WDK** (`@tetherto/wdk`) | Self-custodial wallet, Aave lending protocol |
+| **OpenClaw** | Agent identity (SOUL.md), skills, tool definitions |
+| **Foundry** | Smart contract testing & deployment |
+| **OpenAI GPT-4** | Agent reasoning for yield/credit decisions |
+| **Ethers.js v6** | Read-only contract interactions |
+
+## Architecture
 
 ```
-agenttreasury-core/
-├── contracts/              # Solidity smart contracts
-│   ├── TreasuryVault.sol   # Multi-sig treasury with yield
-│   └── CreditLine.sol      # On-chain credit scoring
-├── backend/                # Node.js + Express
-│   ├── src/agents/
-│   │   ├── TreasuryAgent.ts   # Yield optimization, security
-│   │   └── CreditAgent.ts     # Credit scoring, lending
-│   ├── orchestrator/
-│   │   └── EventBus.ts        # Agent communication
-│   └── index.ts            # API server + WebSocket
-└── frontend/               # React + TypeScript
-    └── src/components/     # Dashboard UI
+agent-treasury/
+├── agents/                     # OpenClaw agent workspace
+│   ├── AGENTS.md               # Agent roster & communication rules
+│   ├── SOUL.md                 # Behavioral identity & constraints
+│   ├── TOOLS.md                # Available MCP tools
+│   ├── treasury/SKILL.md       # Treasury agent skill
+│   └── credit/SKILL.md         # Credit agent skill
+├── contracts/                  # Solidity 0.8.20 (Foundry)
+│   ├── TreasuryVault.sol       # Multi-sig vault + yield
+│   ├── CreditLine.sol          # Credit scoring + lending
+│   ├── test/                   # Forge tests
+│   └── script/Deploy.s.sol     # Deployment script
+├── backend/                    # Node.js + Express + WS
+│   └── src/
+│       ├── agents/             # TreasuryAgent, CreditAgent
+│       ├── services/wdk.ts     # WDK initialization service
+│       ├── orchestrator/       # EventBus pub/sub
+│       └── index.ts            # API + WebSocket server
+├── frontend/                   # React 18 + Vite + Tailwind
+│   └── src/
+│       ├── App.tsx             # Main dashboard
+│       ├── components/         # AgentStatus, LiveLogs, WalletConnect
+│       ├── hooks/              # useDashboard, useWebSocket
+│       └── types/              # Shared types
+├── foundry.toml                # Forge configuration
+└── package.json                # Root scripts
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
-- Node.js 20+
-- Ethereum wallet with Sepolia ETH
+- Node.js 22+
+- Foundry (forge, cast)
+- WDK seed phrase (12/24-word mnemonic)
+- Sepolia ETH for gas
 - OpenAI API key
 
-### 1. Clone & Install
+### 1. Install
 
 ```bash
 git clone <repo-url>
-cd agenttreasury-core
+cd agent-treasury
 
-# Install backend dependencies
-cd backend
-npm install
+# Install all dependencies
+npm run install:all
 
-# Install frontend dependencies
-cd ../frontend
-npm install
+# Install Foundry deps
+cd contracts && forge install OpenZeppelin/openzeppelin-contracts foundry-rs/forge-std --no-commit
 ```
 
 ### 2. Environment Setup
 
 ```bash
-# Backend .env
 cp backend/.env.example backend/.env
+```
 
-# Edit backend/.env with your values:
-OPENAI_API_KEY=your_openai_key
-AGENT_PRIVATE_KEY=your_wallet_private_key
+Edit `backend/.env`:
+```bash
+OPENAI_API_KEY=sk-...
+WDK_SEED_PHRASE="your twelve word mnemonic phrase goes here ..."
 RPC_URL=https://rpc.sepolia.org
 CHAIN_ID=11155111
 USDT_ADDRESS=0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0
-TREASURY_VAULT_ADDRESS=<deployed_address>
-CREDIT_LINE_ADDRESS=<deployed_address>
+AAVE_POOL_ADDRESS=0x6Ae43d3271ff6888e7Fc43Fd7321a503104E31D7
+TREASURY_VAULT_ADDRESS=<deployed>
+CREDIT_LINE_ADDRESS=<deployed>
 ```
 
 ### 3. Deploy Contracts
 
 ```bash
-cd contracts
-# Install Foundry or Hardhat
-# Deploy contracts to Sepolia
-forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast
+npm run contracts:test           # Run Forge tests first
+npm run contracts:deploy         # Deploy to Sepolia
 ```
 
-### 4. Start Backend
+### 4. Run
 
 ```bash
-cd backend
-npm run dev
+# Terminal 1 — Backend (port 3001)
+npm run dev:backend
+
+# Terminal 2 — Frontend (port 3000)
+npm run dev:frontend
 ```
 
-### 5. Start Frontend
+Visit `http://localhost:3000` for the dashboard.
 
-```bash
-cd frontend
-npm run dev
-```
+## Smart Contracts
 
-Visit `http://localhost:3000` to see the dashboard.
+**TreasuryVault.sol** — Multi-sig vault with yield
+- ReentrancyGuard + AccessControl + Pausable
+- 1h timelock on all withdrawals
+- 2-of-N multi-sig for amounts >= 1000 USDt (6 decimals)
+- Daily volume cap: 10,000 USDt
+- Protocol allowlist for yield investments
 
-## 📊 Features
+**CreditLine.sol** — On-chain credit scoring
+- Score formula: `500 + min(txCount*2, 200) + min(volume/100, 150) + repaidLoans*100 + min(age/10, 50) - defaults*200`
+- 3 tiers: Excellent (800+, 5k, 5%), Good (600+, 2k, 10%), Poor (<600, 500, 15%)
+- Interest: `(principal * rate * time) / (365 days * 10000)`
+- 30-day loan terms, automatic default detection
 
-### TreasuryAgent
-
-- ✅ Self-custodial wallet via WDK
-- ✅ Real-time USDt balance monitoring
-- ✅ Deposit/withdraw with security validations
-- ✅ Yield farming on Aave/Compound
-- ✅ Emergency stop mechanism
-- ✅ Daily limits (10,000 USDt)
-- ✅ Multi-sig simulation (2-of-3 for large amounts)
-
-### CreditAgent
-
-- ✅ On-chain credit scoring (0-1000)
-- ✅ LLM-enhanced risk analysis
-- ✅ Automatic tier assignment
-  - Excellent (800+): $5,000 at 5% APR
-  - Good (600-799): $2,000 at 10% APR
-  - Poor (<600): $500 at 15% APR
-- ✅ Loan lifecycle management
-- ✅ Default detection
-
-### Smart Contracts
-
-**TreasuryVault.sol**
-- ReentrancyGuard + AccessControl
-- Propose/Execute pattern with 1h timelock
-- Daily volume tracking
-- Pause mechanism
-- Protocol allowlist
-
-**CreditLine.sol**
-- On-chain credit profiles
-- Interest calculation: `(principal * rate * time) / (365 days * 10000)`
-- Loan tracking and defaults
-
-### Frontend Dashboard
-
-- ✅ Real-time USDt balance (5s refresh)
-- ✅ Credit score with progress bar
-- ✅ Borrow/Repay buttons (functional)
-- ✅ Active loans list
-- ✅ Live agent decision logs
-- ✅ Agent status indicator
-
-## 🔧 Configuration
-
-### Security Constraints
-
-```javascript
-const CONSTRAINTS = {
-  MAX_DAILY_VOLUME: 10000 * 10**6,  // 10k USDt
-  MAX_SINGLE_TX: 1000 * 10**6,      // 1k USDt
-  ALLOWED_PROTOCOLS: ['aave', 'compound'],
-  EMERGENCY_PAUSE: true,
-  MULTISIG_THRESHOLD: 1000 * 10**6  // >1k needs 2 signatures
-};
-```
-
-### Credit Scoring Algorithm
-
-```typescript
-function calculateScore(history: CreditHistory): number {
-  let score = 500; // Base
-  
-  // Positive factors
-  score += Math.min(history.transactionCount * 2, 200);
-  score += Math.min(history.volumeUSD / 100, 150);
-  score += history.repaidLoans * 100;
-  score += Math.min(history.accountAge / 10, 50);
-  
-  // Negative factors
-  score -= history.defaults * 200;
-  
-  return Math.min(Math.max(score, 0), 1000);
-}
-```
-
-## 🧪 Testing
-
-```bash
-# Backend tests
-cd backend
-npm test
-
-# Contract tests
-cd contracts
-forge test
-
-# Frontend tests
-cd frontend
-npm test
-```
-
-## 📡 API Endpoints
+## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
+| `/health` | GET | Health check + agent status |
 | `/api/dashboard` | GET | Full dashboard data |
 | `/api/treasury` | GET | Treasury state |
-| `/api/treasury/sync` | POST | Sync treasury state |
+| `/api/treasury/sync` | POST | Force treasury sync |
 | `/api/credit/:address` | GET | Credit profile |
-| `/api/credit/:address/evaluate` | POST | Evaluate credit |
+| `/api/credit/:address/evaluate` | POST | Evaluate/update credit |
+| `/api/credit/:address/loans` | GET | User loans |
 | `/api/loans` | GET | All active loans |
-| `/ws` | WS | WebSocket for real-time updates |
+| `/api/decisions` | GET | Agent decision log |
+| `/api/yield/opportunities` | GET | Current yield opportunities |
+| `/api/emergency/pause` | POST | Emergency stop |
+| `/ws` | WS | Real-time events |
 
-## 🔐 Security
+## Testing
 
-- **ReentrancyGuard** on all external functions
-- **AccessControl** for role-based permissions
-- **Timelock** on large withdrawals (1 hour)
-- **Multi-sig** for transactions > $1,000
-- **Daily limits** to prevent draining
-- **Emergency pause** for crisis response
-- **Protocol allowlist** for yield farming
+```bash
+# Smart contract tests (Foundry)
+npm run contracts:test
 
-## 📈 Performance
+# Backend typecheck
+cd backend && npm run typecheck
 
-- Balance updates: Every 5 seconds
-- Agent decisions: Logged in real-time
-- WebSocket: Sub-100ms latency
-- API response: < 500ms
+# Frontend build check
+cd frontend && npm run build
+```
 
-## 🎥 Demo
+## Security
 
-[Link to demo video]
+- Agents use WDK self-custodial wallets — no private keys on server
+- All vault writes go through timelock + multi-sig
+- ReentrancyGuard on every `external` function
+- Daily volume + single-tx caps
+- Emergency pause via GUARDIAN_ROLE
+- OpenClaw SOUL.md constrains agent behavior (safety-first, conservative risk, on-chain verification)
 
-## 📝 License
+## License
 
-MIT License - see LICENSE file
-
-## 🙏 Acknowledgments
-
-- Tether for WDK and hackathon opportunity
-- OpenAI for GPT-4 API
-- Aave/Compound for yield protocols
-- OpenZeppelin for secure contract libraries
-
----
-
-**Built with ❤️ for Tether Hackathon 2026**
+MIT
