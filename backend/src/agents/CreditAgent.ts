@@ -383,7 +383,7 @@ REASONING: [2-3 sentences explaining the score]
       logger.info(`On-chain profile updated for ${address}`, { hash });
     } catch (error) {
       logger.error(`Failed to update on-chain profile for ${address}`, { error });
-      throw error;
+      // Don't throw — profile evaluation can still succeed without on-chain write
     }
   }
 

@@ -41,6 +41,8 @@ cache/
 artifacts/
 forge-cache/
 out/
+broadcast/
+contracts/out/
 
 # TypeScript
 *.tsbuildinfo

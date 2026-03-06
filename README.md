@@ -59,10 +59,45 @@ agent-treasury/
 ### Prerequisites
 
 - Node.js 22+
-- Foundry (forge, cast)
+- Foundry (forge, anvil)
+- OpenAI API key (optional — works without it via algorithmic fallback)
+
+### Quick Demo (Local — No testnet needed!)
+
+The fastest way to see the system working:
+
+```powershell
+# 1. Start Anvil (local devnet)
+anvil --host 127.0.0.1 --port 8545
+
+# 2. Deploy contracts + seed vault with 50k USDt
+forge script contracts/script/DeployLocal.s.sol:DeployLocal \
+  --rpc-url http://127.0.0.1:8545 --broadcast
+
+# 3. Copy .env.example → .env, fill in deployed addresses from step 2
+cp backend/.env.example backend/.env
+
+# 4. Start backend
+cd backend && npx ts-node src/index.ts
+
+# 5. Test
+curl http://localhost:3001/health
+curl http://localhost:3001/api/dashboard
+curl -X POST http://localhost:3001/api/credit/0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC/evaluate
+```
+
+Or run the automated demo script (Windows):
+```powershell
+$env:OPENAI_API_KEY = "sk-..."   # optional
+.\scripts\demo-local.ps1
+```
+
+### Full Setup (Sepolia)
+
+#### Prerequisites (additional)
 - WDK seed phrase (12/24-word mnemonic)
 - Sepolia ETH for gas
-- OpenAI API key
+- Sepolia RPC URL (Alchemy/Infura)
 
 ### 1. Install
 
