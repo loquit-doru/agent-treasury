@@ -140,7 +140,7 @@ async function getDashboardData(): Promise<DashboardData> {
     lastUpdated: Date.now(),
   };
 
-  const creditProfiles = Array.from(creditAgent?.['profiles'].values() || []);
+  const creditProfiles = creditAgent?.getProfiles() || [];
   const activeLoans = creditAgent?.getAllActiveLoans() || [];
   
   const agentDecisions = [
@@ -288,6 +288,89 @@ app.post('/api/emergency/pause', async (_req, res) => {
     res.json({ success: true, message: 'Emergency pause activated' });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Failed to activate emergency pause' });
+  }
+});
+
+// ==================== Loan Lifecycle Routes ====================
+
+// Borrow USDt
+app.post('/api/credit/:address/borrow', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const { amount } = req.body as { amount: string };
+    if (!amount) {
+      res.status(400).json({ success: false, error: 'Missing amount' });
+      return;
+    }
+    const loan = await creditAgent?.processBorrow(address, BigInt(amount));
+    if (!loan) {
+      res.status(403).json({ success: false, error: 'Borrow declined or insufficient credit' });
+      return;
+    }
+    res.json({ success: true, data: loan });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Borrow failed' });
+  }
+});
+
+// Repay a loan
+app.post('/api/credit/:address/repay', async (req, res) => {
+  try {
+    const { loanId, amount } = req.body as { loanId: number; amount: string };
+    if (loanId == null || !amount) {
+      res.status(400).json({ success: false, error: 'Missing loanId or amount' });
+      return;
+    }
+    const ok = await creditAgent?.processRepayment(loanId, BigInt(amount));
+    res.json({ success: !!ok });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Repayment failed' });
+  }
+});
+
+// ==================== Yield Routes ====================
+
+// Propose yield investment
+app.post('/api/yield/invest', async (req, res) => {
+  try {
+    const { protocol, amount, apy } = req.body as { protocol: string; amount: string; apy: number };
+    if (!protocol || !amount) {
+      res.status(400).json({ success: false, error: 'Missing protocol or amount' });
+      return;
+    }
+    const hash = await treasuryAgent?.proposeYieldInvestment(
+      protocol,
+      BigInt(amount),
+      apy || 0
+    );
+    if (!hash) {
+      res.status(400).json({ success: false, error: 'Investment rejected' });
+      return;
+    }
+    res.json({ success: true, data: { txHash: hash } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Yield investment failed' });
+  }
+});
+
+// ==================== Withdrawal Routes ====================
+
+// Propose withdrawal
+app.post('/api/treasury/withdrawal/propose', async (req, res) => {
+  try {
+    const { to, amount } = req.body as { to: string; amount: string };
+    if (!to || !amount) {
+      res.status(400).json({ success: false, error: 'Missing to or amount' });
+      return;
+    }
+    const hash = await treasuryAgent?.proposeWithdrawal(to, BigInt(amount));
+    if (!hash) {
+      res.status(400).json({ success: false, error: 'Proposal rejected' });
+      return;
+    }
+    res.json({ success: true, data: { txHash: hash } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Withdrawal proposal failed' });
   }
 });
 

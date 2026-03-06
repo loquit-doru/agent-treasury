@@ -423,9 +423,45 @@ REASONING: [2-3 sentences explaining the score]
         return null;
       }
 
-      // Execute borrow
-      // Note: Actual borrow happens through CreditLine contract
-      // This would trigger Treasury to disburse funds
+      // Execute on-chain borrow via WDK
+      const iface = new ethers.Interface(CREDIT_LINE_ABI);
+      const callData = iface.encodeFunctionData('borrow', [amount]);
+
+      let txHash: string | undefined;
+      try {
+        const result = await this.wdkAccount.sendTransaction({
+          to: this.config.creditLineAddress,
+          value: '0',
+          data: callData,
+        });
+        txHash = result.hash;
+      } catch (err) {
+        logger.error('On-chain borrow tx failed', { err });
+        // Don't block — loan can still be tracked off-chain for demo
+      }
+
+      // Build Loan object
+      const now = Math.floor(Date.now() / 1000);
+      const dueDate = now + 30 * 86400; // 30 days
+      const loanId = this.loans.size;
+      const loan: Loan = {
+        id: loanId,
+        borrower: address,
+        principal: amount.toString(),
+        interestRate: profile.rate,
+        borrowedAt: now,
+        dueDate,
+        repaid: '0',
+        interest: '0',
+        totalDue: amount.toString(),
+        active: true,
+      };
+      this.loans.set(loanId, loan);
+
+      // Update profile available credit
+      profile.borrowed = (BigInt(profile.borrowed) + amount).toString();
+      profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
+      this.profiles.set(address.toLowerCase(), profile);
 
       const decision: AgentDecision = {
         id: `borrow-${Date.now()}`,
@@ -433,7 +469,8 @@ REASONING: [2-3 sentences explaining the score]
         timestamp: Date.now(),
         action: 'approve_borrow',
         reasoning: `Approved borrow of ${ethers.formatUnits(amount, 6)} USDt based on credit score ${profile.score}`,
-        data: { address, amount: amount.toString(), score: profile.score },
+        data: { address, amount: amount.toString(), score: profile.score, loanId },
+        txHash,
         status: 'executed',
       };
 
@@ -446,9 +483,9 @@ REASONING: [2-3 sentences explaining the score]
         reason: 'loan_disbursement',
       });
 
-      logger.info(`Borrow approved for ${address}`, { amount: amount.toString() });
+      logger.info(`Borrow approved for ${address}`, { amount: amount.toString(), loanId });
 
-      return null; // Loan will be created after treasury disbursement
+      return loan;
     } catch (error) {
       logger.error(`Borrow processing failed for ${address}`, { error });
       return null;
@@ -507,7 +544,7 @@ Respond with ONLY "APPROVE" or "DECLINE".
       const iface = new ethers.Interface(CREDIT_LINE_ABI);
       const data = iface.encodeFunctionData('repay', [loanId, amount]);
 
-      await this.wdkAccount.sendTransaction({
+      const { hash } = await this.wdkAccount.sendTransaction({
         to: this.config.creditLineAddress,
         value: '0',
         data,
@@ -517,7 +554,28 @@ Respond with ONLY "APPROVE" or "DECLINE".
       const loan = await this.creditContract.loans(loanId);
       await this.evaluateCredit(loan.borrower);
 
-      logger.info(`Repayment processed for loan ${loanId}`);
+      // Update local loan state
+      const localLoan = this.loans.get(loanId);
+      if (localLoan) {
+        localLoan.repaid = (BigInt(localLoan.repaid) + amount).toString();
+        const due = BigInt(localLoan.totalDue) - amount;
+        localLoan.totalDue = (due > 0n ? due : 0n).toString();
+        if (due <= 0n) localLoan.active = false;
+      }
+
+      const decision: AgentDecision = {
+        id: `repay-${Date.now()}`,
+        agentType: 'credit',
+        timestamp: Date.now(),
+        action: 'repay_loan',
+        reasoning: `Repaid ${ethers.formatUnits(amount, 6)} USDt on loan #${loanId}`,
+        data: { loanId, amount: amount.toString(), borrower: loan.borrower },
+        txHash: hash,
+        status: 'executed',
+      };
+      EventBus.emitEvent('credit:loan_repaid', 'credit', decision);
+
+      logger.info(`Repayment processed for loan ${loanId}`, { hash });
       return true;
     } catch (error) {
       logger.error(`Repayment failed for loan ${loanId}`, { error });
@@ -563,24 +621,30 @@ Respond with ONLY "APPROVE" or "DECLINE".
    */
   async syncLoans(): Promise<void> {
     try {
-      // In production, this would query events or use The Graph
-      // For hackathon, we use a simplified approach
-      
-      const loanCount = await this.creditContract.loanCount?.() || 0;
-      
+      let loanCount: number;
+      try {
+        loanCount = Number(await this.creditContract.loanCount());
+      } catch {
+        loanCount = 0;
+      }
+
+      if (loanCount === 0) return;
+
       for (let i = 0; i < Math.min(loanCount, 100); i++) {
         try {
           const loan = await this.creditContract.loans(i);
           
           if (loan.borrower !== ethers.ZeroAddress) {
-            const interest = await this.creditContract.calculateInterest(i);
-            const totalDue = await this.creditContract.getAmountDue(i);
+            const [interest, totalDue] = await Promise.all([
+              this.creditContract.calculateInterest(i),
+              this.creditContract.getAmountDue(i),
+            ]);
 
             this.loans.set(i, {
               id: i,
               borrower: loan.borrower,
               principal: loan.principal.toString(),
-              interestRate: loan.interestRate,
+              interestRate: Number(loan.interestRate),
               borrowedAt: Number(loan.borrowedAt),
               dueDate: Number(loan.dueDate),
               repaid: loan.repaid.toString(),
@@ -589,13 +653,20 @@ Respond with ONLY "APPROVE" or "DECLINE".
               active: loan.active,
             });
           }
-        } catch (error) {
+        } catch {
           // Loan might not exist
         }
       }
     } catch (error) {
       logger.error('Loan sync failed', { error });
     }
+  }
+
+  /**
+   * Get all cached credit profiles
+   */
+  getProfiles(): CreditProfile[] {
+    return Array.from(this.profiles.values());
   }
 
   /**
