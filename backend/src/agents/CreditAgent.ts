@@ -1,9 +1,10 @@
 /**
  * CreditAgent - On-chain credit scoring and lending
- * Capabilities: Credit evaluation, loan management, risk assessment
+ * Uses WDK for wallet operations, ethers for contract reads
  */
 
 import { ethers } from 'ethers';
+import WDK from '@tetherto/wdk';
 import OpenAI from 'openai';
 import EventBus from '../orchestrator/EventBus';
 import logger from '../utils/logger';
@@ -27,9 +28,9 @@ const CREDIT_LINE_ABI = [
   'function calculateInterest(uint256 loanId) view returns (uint256)',
   'function getAmountDue(uint256 loanId) view returns (uint256)',
   'function getActiveLoans(address user) view returns (uint256[])',
-  'function getProfile(address user) view returns (uint256 score, uint256 limit, uint256 rate, uint256 borrowed, uint256 available, uint256 lastUpdated)',
-  'function hasProfile(address user) view returns (bool)',
+  'function profiles(address) view returns (uint256 score, uint256 limit, uint256 rate, uint256 borrowed, uint256 repaid, uint256 defaults, uint256 lastUpdated, uint256 transactionCount, uint256 volumeUSD, uint256 accountAge, uint256 repaidLoans, bool exists)',
   'function loans(uint256) view returns (address borrower, uint256 principal, uint256 interestRate, uint256 borrowedAt, uint256 dueDate, uint256 repaid, bool active)',
+  'function loanCount() view returns (uint256)',
   'event ProfileUpdated(address indexed user, uint256 score, uint256 limit, uint256 rate)',
   'event LoanCreated(uint256 indexed loanId, address indexed borrower, uint256 principal, uint256 interestRate, uint256 dueDate)',
   'event LoanRepaid(uint256 indexed loanId, address indexed borrower, uint256 amount, uint256 interest)',
@@ -46,7 +47,8 @@ const CREDIT_TIERS: CreditTier[] = [
 export class CreditAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private signer: ethers.Signer;
+  private wdk: WDK;
+  private wdkAccount: any;
   private creditContract: ethers.Contract;
   private openai: OpenAI;
   private config: AgentConfig;
@@ -54,19 +56,26 @@ export class CreditAgent {
   private loans: Map<number, Loan> = new Map();
   private monitoringInterval: NodeJS.Timeout | null = null;
 
-  constructor(config: AgentConfig, provider: ethers.Provider, signer: ethers.Signer) {
+  constructor(
+    config: AgentConfig,
+    provider: ethers.Provider,
+    wdk: WDK,
+    wdkAccount: any,
+  ) {
     this.config = config;
     this.provider = provider;
-    this.signer = signer;
+    this.wdk = wdk;
+    this.wdkAccount = wdkAccount;
     
     this.openai = new OpenAI({
       apiKey: config.openaiApiKey,
     });
 
+    // Read-only contract handle; writes go through WDK
     this.creditContract = new ethers.Contract(
       config.creditLineAddress,
       CREDIT_LINE_ABI,
-      signer
+      provider
     );
 
     this.setupEventListeners();
@@ -200,31 +209,54 @@ export class CreditAgent {
   }
 
   /**
-   * Fetch credit history from blockchain
+   * Fetch credit history from blockchain (real on-chain data)
    */
   async fetchCreditHistory(address: string): Promise<CreditHistory> {
-    // In production, this would:
-    // 1. Query transaction history from indexer
-    // 2. Check existing loans
-    // 3. Analyze DeFi interactions
-    
-    // For hackathon, we simulate with realistic data
-    // In a real implementation, you'd use The Graph or similar
-    
-    const code = await this.provider.getCode(address);
-    const isContract = code !== '0x';
-    
-    // Simulate based on address (deterministic for demo)
-    const addrHash = ethers.keccak256(ethers.toUtf8Bytes(address));
-    const addrNum = BigInt(addrHash);
-    
-    return {
-      transactionCount: Number(addrNum % BigInt(500)),
-      volumeUSD: Number(addrNum % BigInt(50000)),
-      accountAge: Number(addrNum % BigInt(730)), // Days
-      repaidLoans: Number(addrNum % BigInt(10)),
-      defaults: Number(addrNum % BigInt(3)),
-    };
+    try {
+      // Real on-chain data
+      const [txCount, balance] = await Promise.all([
+        this.provider.getTransactionCount(address),
+        this.provider.getBalance(address),
+      ]);
+
+      // Check existing profile on contract
+      let repaidLoans = 0;
+      let defaults = 0;
+      try {
+        const profile = await this.creditContract.profiles(address);
+        if (profile.exists) {
+          repaidLoans = Number(profile.repaidLoans);
+          defaults = Number(profile.defaults);
+        }
+      } catch {
+        // No existing profile
+      }
+
+      // Estimate account age from first block interaction
+      // (simplified: use tx count as proxy for Sepolia testnet)
+      const accountAge = Math.min(txCount * 2, 730); // rough estimate in days
+
+      // Volume estimate from balance (ETH → USD rough conversion for scoring)
+      const ethBalance = Number(ethers.formatEther(balance));
+      const volumeUSD = Math.floor(ethBalance * 2500); // rough ETH/USD
+
+      return {
+        transactionCount: txCount,
+        volumeUSD,
+        accountAge,
+        repaidLoans,
+        defaults,
+      };
+    } catch (error) {
+      logger.error(`Failed to fetch credit history for ${address}`, { error });
+      return {
+        transactionCount: 0,
+        volumeUSD: 0,
+        accountAge: 0,
+        repaidLoans: 0,
+        defaults: 0,
+      };
+    }
   }
 
   /**
@@ -327,26 +359,31 @@ REASONING: [2-3 sentences explaining the score]
   }
 
   /**
-   * Update on-chain credit profile
+   * Update on-chain credit profile via WDK
    */
   async updateOnChainProfile(
     address: string,
     history: CreditHistory,
-    profile: CreditProfile
+    _profile: CreditProfile
   ): Promise<void> {
     try {
-      const tx = await this.creditContract.updateProfile(
+      const iface = new ethers.Interface(CREDIT_LINE_ABI);
+      const data = iface.encodeFunctionData('updateProfile', [
         address,
         history.transactionCount,
         history.volumeUSD,
         history.accountAge,
         history.repaidLoans,
-        history.defaults
-      );
+        history.defaults,
+      ]);
 
-      await tx.wait();
+      const { hash } = await this.wdkAccount.sendTransaction({
+        to: this.config.creditLineAddress,
+        value: '0',
+        data,
+      });
 
-      logger.info(`On-chain profile updated for ${address}`);
+      logger.info(`On-chain profile updated for ${address}`, { hash });
     } catch (error) {
       logger.error(`Failed to update on-chain profile for ${address}`, { error });
       throw error;
@@ -462,7 +499,7 @@ Respond with ONLY "APPROVE" or "DECLINE".
   }
 
   /**
-   * Process loan repayment
+   * Process loan repayment via WDK
    */
   async processRepayment(loanId: number, amount: bigint): Promise<boolean> {
     try {
@@ -470,8 +507,14 @@ Respond with ONLY "APPROVE" or "DECLINE".
         amount: amount.toString(),
       });
 
-      const tx = await this.creditContract.repay(loanId, amount);
-      await tx.wait();
+      const iface = new ethers.Interface(CREDIT_LINE_ABI);
+      const data = iface.encodeFunctionData('repay', [loanId, amount]);
+
+      await this.wdkAccount.sendTransaction({
+        to: this.config.creditLineAddress,
+        value: '0',
+        data,
+      });
 
       // Recalculate borrower's credit
       const loan = await this.creditContract.loans(loanId);
@@ -498,7 +541,13 @@ Respond with ONLY "APPROVE" or "DECLINE".
         if (now > loan.dueDate) {
           logger.warn(`Loan ${loanId} is past due, marking as defaulted`);
           
-          await this.creditContract.markDefaulted(loanId);
+          const iface = new ethers.Interface(CREDIT_LINE_ABI);
+          const data = iface.encodeFunctionData('markDefaulted', [loanId]);
+          await this.wdkAccount.sendTransaction({
+            to: this.config.creditLineAddress,
+            value: '0',
+            data,
+          });
           
           EventBus.emitEvent('credit:loan_defaulted', 'credit', {
             loanId,
@@ -553,23 +602,28 @@ Respond with ONLY "APPROVE" or "DECLINE".
   }
 
   /**
-   * Get user's credit profile
+   * Get user's credit profile (reads from contract's public mapping)
    */
   async getProfile(address: string): Promise<CreditProfile | null> {
     const cached = this.profiles.get(address.toLowerCase());
     if (cached) return cached;
 
     try {
-      const onChainProfile = await this.creditContract.getProfile(address);
+      const p = await this.creditContract.profiles(address);
       
+      if (!p.exists) return null;
+
+      const borrowed = BigInt(p.borrowed);
+      const limit = BigInt(p.limit);
+
       const profile: CreditProfile = {
         address,
-        score: Number(onChainProfile.score),
-        limit: onChainProfile.limit.toString(),
-        rate: Number(onChainProfile.rate),
-        borrowed: onChainProfile.borrowed.toString(),
-        available: onChainProfile.available.toString(),
-        lastUpdated: Number(onChainProfile.lastUpdated),
+        score: Number(p.score),
+        limit: p.limit.toString(),
+        rate: Number(p.rate),
+        borrowed: p.borrowed.toString(),
+        available: (limit - borrowed).toString(),
+        lastUpdated: Number(p.lastUpdated),
         exists: true,
       };
 

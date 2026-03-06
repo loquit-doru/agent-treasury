@@ -14,6 +14,7 @@ import dotenv from 'dotenv';
 import TreasuryAgent from './agents/TreasuryAgent';
 import CreditAgent from './agents/CreditAgent';
 import EventBus from './orchestrator/EventBus';
+import { initWdk, getAccount, disposeWdk } from './services/wdk';
 import logger from './utils/logger';
 import { AgentConfig, DashboardData, AgentStatus } from './types';
 
@@ -23,20 +24,20 @@ dotenv.config();
 // Configuration
 const config: AgentConfig = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
-  wdkApiKey: process.env.WDK_API_KEY || '',
+  seedPhrase: process.env.WDK_SEED_PHRASE || '',
   rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
   chainId: parseInt(process.env.CHAIN_ID || '11155111'),
   treasuryVaultAddress: process.env.TREASURY_VAULT_ADDRESS || '',
   creditLineAddress: process.env.CREDIT_LINE_ADDRESS || '',
   usdtAddress: process.env.USDT_ADDRESS || '',
   aavePoolAddress: process.env.AAVE_POOL_ADDRESS,
-  compoundComptrollerAddress: process.env.COMPOUND_COMPTROLLER_ADDRESS,
 };
 
 // Validate configuration
 function validateConfig(): boolean {
   const required = [
     'openaiApiKey',
+    'seedPhrase',
     'treasuryVaultAddress',
     'creditLineAddress',
     'usdtAddress',
@@ -74,23 +75,22 @@ const wsClients: Set<WebSocket> = new Set();
  */
 async function initializeAgents(): Promise<void> {
   try {
-    // Setup provider and signer
-    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
-    
-    // Use private key from environment
-    const privateKey = process.env.AGENT_PRIVATE_KEY;
-    if (!privateKey) {
-      throw new Error('AGENT_PRIVATE_KEY not set');
-    }
-    
-    const signer = new ethers.Wallet(privateKey, provider);
-    const address = await signer.getAddress();
-    
-    logger.info(`Agent wallet: ${address}`);
+    // Initialize WDK with seed phrase
+    const wdk = await initWdk({
+      seedPhrase: config.seedPhrase,
+      rpcUrl: config.rpcUrl,
+      chainId: config.chainId,
+      aavePoolAddress: config.aavePoolAddress,
+    });
 
-    // Initialize agents
-    treasuryAgent = new TreasuryAgent(config, provider, signer);
-    creditAgent = new CreditAgent(config, provider, signer);
+    const wdkAccount = await getAccount(wdk);
+
+    // ethers provider is still used for contract interactions
+    const provider = new ethers.JsonRpcProvider(config.rpcUrl);
+
+    // Initialize agents with WDK account + ethers provider for contracts
+    treasuryAgent = new TreasuryAgent(config, provider, wdk, wdkAccount);
+    creditAgent = new CreditAgent(config, provider, wdk, wdkAccount);
 
     // Start agents
     await treasuryAgent.start();
@@ -377,6 +377,7 @@ process.on('SIGTERM', async () => {
   
   await treasuryAgent?.stop();
   await creditAgent?.stop();
+  await disposeWdk();
   
   server.close(() => {
     logger.info('Server closed');
@@ -389,6 +390,7 @@ process.on('SIGINT', async () => {
   
   await treasuryAgent?.stop();
   await creditAgent?.stop();
+  await disposeWdk();
   
   server.close(() => {
     logger.info('Server closed');

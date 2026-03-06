@@ -29,6 +29,9 @@ yarn-error.log*
 *~
 .DS_Store
 
+# WDK
+wdk-data.json
+
 # Testing
 coverage/
 .nyc_output/

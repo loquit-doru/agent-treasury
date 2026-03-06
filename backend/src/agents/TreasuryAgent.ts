@@ -1,11 +1,13 @@
 /**
  * TreasuryAgent - Manages DAO treasury funds
- * Capabilities: WDK wallet, yield farming, security controls
+ * Uses WDK for wallet operations and Aave lending
  */
 
 import { ethers } from 'ethers';
+import WDK from '@tetherto/wdk';
 import OpenAI from 'openai';
 import EventBus from '../orchestrator/EventBus';
+import { getAaveLending } from '../services/wdk';
 import logger from '../utils/logger';
 import {
   AgentType,
@@ -44,7 +46,7 @@ const ERC20_ABI = [
 const CONSTRAINTS = {
   MAX_DAILY_VOLUME: ethers.parseUnits('10000', 6), // 10k USDt
   MAX_SINGLE_TX: ethers.parseUnits('1000', 6),      // 1k USDt
-  ALLOWED_PROTOCOLS: ['aave', 'compound'],
+  ALLOWED_PROTOCOLS: ['aave'],
   REBALANCE_THRESHOLD: 5, // 5% APY difference triggers rebalance
   MIN_YIELD_ALLOCATION: 10, // Min 10% of treasury in yield
   MAX_YIELD_ALLOCATION: 50, // Max 50% of treasury in yield
@@ -53,7 +55,8 @@ const CONSTRAINTS = {
 export class TreasuryAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private signer: ethers.Signer;
+  private wdk: WDK;
+  private wdkAccount: any; // WDK account type
   private vaultContract: ethers.Contract;
   private usdtContract: ethers.Contract;
   private openai: OpenAI;
@@ -61,19 +64,27 @@ export class TreasuryAgent {
   private lastState: TreasuryState | null = null;
   private monitoringInterval: NodeJS.Timeout | null = null;
 
-  constructor(config: AgentConfig, provider: ethers.Provider, signer: ethers.Signer) {
+  constructor(
+    config: AgentConfig,
+    provider: ethers.Provider,
+    wdk: WDK,
+    wdkAccount: any,
+  ) {
     this.config = config;
     this.provider = provider;
-    this.signer = signer;
+    this.wdk = wdk;
+    this.wdkAccount = wdkAccount;
     
     this.openai = new OpenAI({
       apiKey: config.openaiApiKey,
     });
 
+    // Contracts still use ethers for ABI-level calls
+    // WDK handles wallet/signing; ethers reads contract state
     this.vaultContract = new ethers.Contract(
       config.treasuryVaultAddress,
       TREASURY_VAULT_ABI,
-      signer
+      provider // read-only; writes go through WDK
     );
 
     this.usdtContract = new ethers.Contract(
@@ -103,7 +114,7 @@ export class TreasuryAgent {
 
     // Emit startup event
     EventBus.emitEvent('agent:started', 'treasury', {
-      address: await this.signer.getAddress(),
+      address: this.wdkAccount.address ?? 'unknown',
       vault: this.config.treasuryVaultAddress,
     });
 
@@ -238,26 +249,50 @@ export class TreasuryAgent {
   }
 
   /**
-   * Fetch yield opportunities from protocols
+   * Fetch yield opportunities — tries WDK Aave lending first, falls back gracefully.
    */
   async fetchYieldOpportunities(): Promise<YieldOpportunity[]> {
-    // In production, this would fetch real APY data from Aave/Compound
-    // For hackathon, we simulate with realistic data
-    
-    const opportunities: YieldOpportunity[] = [
-      {
-        protocol: 'aave',
-        apy: 8.2,
-        tvl: '500000000',
-        risk: 'low',
-      },
-      {
-        protocol: 'compound',
-        apy: 7.5,
-        tvl: '300000000',
-        risk: 'low',
-      },
-    ];
+    const opportunities: YieldOpportunity[] = [];
+
+    try {
+      const aave = getAaveLending(this.wdkAccount);
+      if (aave) {
+        // Attempt to read real reserve data via WDK lending protocol
+        const reserveData = await (aave as any).getReserveData?.();
+        if (reserveData?.liquidityRate) {
+          const apy = Number(reserveData.liquidityRate) / 1e25; // ray → %
+          opportunities.push({
+            protocol: 'aave',
+            apy,
+            tvl: String(reserveData.totalATokenSupply ?? '0'),
+            risk: 'low',
+          });
+          return opportunities;
+        }
+      }
+    } catch (err) {
+      logger.debug('WDK Aave data unavailable, using on-chain fallback', { err });
+    }
+
+    // Fallback: query Aave pool contract directly
+    try {
+      if (this.config.aavePoolAddress) {
+        const poolAbi = [
+          'function getReserveData(address asset) view returns (tuple(uint256 liquidityRate, uint128 totalATokenSupply) data)',
+        ];
+        const pool = new ethers.Contract(this.config.aavePoolAddress, poolAbi, this.provider);
+        const data = await pool.getReserveData(this.config.usdtAddress);
+        const apy = Number(data.liquidityRate) / 1e25;
+        opportunities.push({
+          protocol: 'aave',
+          apy: Math.round(apy * 100) / 100,
+          tvl: data.totalATokenSupply.toString(),
+          risk: 'low',
+        });
+      }
+    } catch (err) {
+      logger.debug('On-chain Aave fallback also failed', { err });
+    }
 
     return opportunities;
   }
@@ -315,7 +350,7 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
   }
 
   /**
-   * Propose a yield investment
+   * Propose a yield investment — send tx through WDK
    */
   async proposeYieldInvestment(
     protocol: string,
@@ -329,17 +364,22 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
         return null;
       }
 
-      // Get protocol address (would be from config)
       const protocolAddress = this.getProtocolAddress(protocol);
       
-      // Propose investment
-      const tx = await this.vaultContract.investInYield(
+      // Encode the contract call
+      const iface = new ethers.Interface(TREASURY_VAULT_ABI);
+      const data = iface.encodeFunctionData('investInYield', [
         protocolAddress,
         amount,
-        Math.floor(apy * 100) // Convert to basis points
-      );
+        Math.floor(apy * 100),
+      ]);
 
-      const receipt = await tx.wait();
+      // Send through WDK
+      const { hash } = await this.wdkAccount.sendTransaction({
+        to: this.config.treasuryVaultAddress,
+        value: '0',
+        data,
+      });
       
       const decision: AgentDecision = {
         id: `yield-${Date.now()}`,
@@ -348,15 +388,15 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
         action: 'invest_yield',
         reasoning: `Invest ${ethers.formatUnits(amount, 6)} USDt in ${protocol} at ${apy}% APY`,
         data: { protocol, amount: amount.toString(), apy },
-        txHash: receipt.hash,
+        txHash: hash,
         status: 'executed',
       };
 
       EventBus.emitEvent('treasury:yield_invested', 'treasury', decision);
       
-      logger.info('Yield investment proposed', { protocol, amount: amount.toString(), apy });
+      logger.info('Yield investment sent via WDK', { protocol, amount: amount.toString(), apy, hash });
       
-      return receipt.hash;
+      return hash;
     } catch (error) {
       logger.error('Yield investment failed', { error, protocol, amount: amount.toString() });
       return null;
@@ -364,11 +404,12 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
   }
 
   /**
-   * Check and execute pending transactions
+   * Check and execute pending transactions via WDK
    */
   async checkPendingTransactions(): Promise<void> {
     try {
       const pendingTxs = await this.vaultContract.getPendingTransactions();
+      const iface = new ethers.Interface(TREASURY_VAULT_ABI);
       
       for (const txHash of pendingTxs) {
         const tx = await this.vaultContract.getTransaction(txHash);
@@ -378,18 +419,25 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
         const executeAfter = tx.proposedAt + 3600; // 1 hour timelock
         
         if (Date.now() / 1000 >= executeAfter) {
-          // Check if we should sign/execute
           const shouldExecute = await this.evaluateTransaction(tx);
           
           if (shouldExecute) {
             if (tx.signatures < 2 && tx.amount >= ethers.parseUnits('1000', 6)) {
-              // Sign transaction
-              await this.vaultContract.signTransaction(txHash);
-              logger.info('Transaction signed', { txHash });
+              const data = iface.encodeFunctionData('signTransaction', [txHash]);
+              await this.wdkAccount.sendTransaction({
+                to: this.config.treasuryVaultAddress,
+                value: '0',
+                data,
+              });
+              logger.info('Transaction signed via WDK', { txHash });
             } else {
-              // Execute transaction
-              await this.vaultContract.executeWithdrawal(txHash);
-              logger.info('Transaction executed', { txHash });
+              const data = iface.encodeFunctionData('executeWithdrawal', [txHash]);
+              await this.wdkAccount.sendTransaction({
+                to: this.config.treasuryVaultAddress,
+                value: '0',
+                data,
+              });
+              logger.info('Transaction executed via WDK', { txHash });
             }
           }
         }
@@ -477,15 +525,21 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
   }
 
   /**
-   * Emergency pause
+   * Emergency pause — send via WDK
    */
   async emergencyPause(): Promise<void> {
     try {
-      await this.vaultContract.emergencyPause();
+      const iface = new ethers.Interface(TREASURY_VAULT_ABI);
+      const data = iface.encodeFunctionData('emergencyPause', []);
+      await this.wdkAccount.sendTransaction({
+        to: this.config.treasuryVaultAddress,
+        value: '0',
+        data,
+      });
       this.status = 'paused';
       
       EventBus.emitEvent('treasury:emergency_pause', 'treasury', {
-        triggeredBy: await this.signer.getAddress(),
+        triggeredBy: this.wdkAccount.address ?? 'unknown',
       });
       
       logger.warn('EMERGENCY PAUSE ACTIVATED');
@@ -500,11 +554,10 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
    */
   private getProtocolAddress(protocol: string): string {
     const addresses: Record<string, string> = {
-      aave: this.config.aavePoolAddress || '0x0000000000000000000000000000000000000000',
-      compound: this.config.compoundComptrollerAddress || '0x0000000000000000000000000000000000000000',
+      aave: this.config.aavePoolAddress || ethers.ZeroAddress,
     };
     
-    return addresses[protocol] || '0x0000000000000000000000000000000000000000';
+    return addresses[protocol] || ethers.ZeroAddress;
   }
 
   /**

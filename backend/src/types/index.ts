@@ -134,14 +134,13 @@ export interface DashboardData {
 // Configuration Types
 export interface AgentConfig {
   openaiApiKey: string;
-  wdkApiKey: string;
+  seedPhrase: string;
   rpcUrl: string;
   chainId: number;
   treasuryVaultAddress: string;
   creditLineAddress: string;
   usdtAddress: string;
   aavePoolAddress?: string;
-  compoundComptrollerAddress?: string;
 }
 
 // Risk Assessment
