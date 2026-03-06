@@ -12,9 +12,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tetherto/wdk": "^1.0.0-beta.5",
-    "@tetherto/wdk-wallet-evm": "^1.0.0-beta.5",
-    "@tetherto/wdk-protocol-lending-aave-evm": "^1.0.0-beta.5",
+    "@tetherto/wdk": "^1.0.0-beta.6",
+    "@tetherto/wdk-wallet-evm": "^1.0.0-beta.8",
+    "@tetherto/wdk-protocol-lending-aave-evm": "^1.0.0-beta.3",
     "express": "^4.18.2",
     "cors": "^2.8.5",
     "helmet": "^7.1.0",

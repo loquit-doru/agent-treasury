@@ -2,7 +2,7 @@
  * Agent Status Component - Shows agent health and WebSocket connection
  */
 
-import { Activity, Wifi, WifiOff, AlertCircle } from 'lucide-react';
+import { Activity, Wifi, WifiOff } from 'lucide-react';
 import { AgentStatusData } from '../types';
 
 interface AgentStatusProps {

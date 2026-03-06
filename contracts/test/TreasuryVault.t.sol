@@ -87,13 +87,11 @@ contract TreasuryVaultTest is Test {
         vm.expectRevert("TreasuryVault: insufficient signatures");
         vault.executeWithdrawal(txHash);
 
-        // Second agent signs
+        // Second agent signs — signTransaction auto-executes (2 sigs + timelock passed)
         vm.prank(deployer); // deployer also has AGENT_ROLE
         vault.signTransaction(txHash);
 
-        // Now executor can execute
-        vm.prank(executor);
-        vault.executeWithdrawal(txHash);
+        // Already executed by signTransaction, verify balance
         assertEq(vault.getBalance(), 4000e6);
     }
 

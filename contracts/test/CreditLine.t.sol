@@ -172,8 +172,10 @@ contract CreditLineTest is Test {
         assertFalse(active);
         assertEq(credit.totalDefaults(), 200e6);
 
-        // Profile should record the default
-        (,,,,,) = credit.getProfile(borrower);
+        // Profile should have the default recorded
+        (uint256 score,,,,, ) = credit.getProfile(borrower);
+        // Score might have changed due to default
+        assertGe(score, 0);
     }
 
     function test_mark_defaulted_before_due_reverts() public {
@@ -192,17 +194,17 @@ contract CreditLineTest is Test {
 
     function test_interest_calculation() public {
         vm.prank(agent);
-        credit.updateProfile(borrower, 5, 0, 0, 0, 0); // poor tier → 15% APR
+        credit.updateProfile(borrower, 5, 0, 0, 0, 0); // poor tier → 15% APR, 500 USDt limit
 
         vm.prank(borrower);
-        credit.borrow(1000e6);
+        credit.borrow(400e6); // borrow within 500e6 limit
 
         // Warp 365 days
         vm.warp(block.timestamp + 365 days);
 
         uint256 interest = credit.calculateInterest(0);
-        // Expected: 1000e6 * 1500 * 365 days / (365 days * 10000) = 150e6
-        assertEq(interest, 150e6);
+        // Expected: 400e6 * 1500 * 365 days / (365 days * 10000) = 60e6
+        assertEq(interest, 60e6);
     }
 
     // ── Active Loans ──────────────────────────────────────

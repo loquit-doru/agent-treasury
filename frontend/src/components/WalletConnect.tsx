@@ -30,8 +30,8 @@ export function WalletConnect() {
   const checkConnection = async () => {
     if (window.ethereum) {
       try {
-        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-        if (accounts.length > 0) {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' }) as string[];
+        if (accounts && accounts.length > 0) {
           setAddress(accounts[0]);
         }
       } catch (error) {
@@ -40,11 +40,12 @@ export function WalletConnect() {
     }
   };
 
-  const handleAccountsChanged = (accounts: string[]) => {
-    if (accounts.length === 0) {
+  const handleAccountsChanged = (accounts: unknown) => {
+    const accs = accounts as string[];
+    if (accs.length === 0) {
       setAddress(null);
     } else {
-      setAddress(accounts[0]);
+      setAddress(accs[0]);
     }
   };
 
@@ -58,8 +59,10 @@ export function WalletConnect() {
     try {
       const accounts = await window.ethereum.request({
         method: 'eth_requestAccounts',
-      });
-      setAddress(accounts[0]);
+      }) as string[];
+      if (accounts && accounts.length > 0) {
+        setAddress(accounts[0]);
+      }
     } catch (error) {
       console.error('Connection failed:', error);
     }
@@ -127,13 +130,3 @@ export function WalletConnect() {
   );
 }
 
-// Type declaration for window.ethereum
-declare global {
-  interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-      on: (event: string, callback: (accounts: string[]) => void) => void;
-      removeListener: (event: string, callback: (accounts: string[]) => void) => void;
-    };
-  }
-}

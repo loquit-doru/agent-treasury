@@ -15,7 +15,7 @@ import {
   ChevronUp
 } from 'lucide-react';
 import { AgentDecision } from '../types';
-import { formatTimestamp, timeAgo } from '../utils/format';
+import { timeAgo } from '../utils/format';
 
 interface LiveLogsProps {
   decisions?: AgentDecision[];
