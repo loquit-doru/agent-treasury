@@ -17,7 +17,25 @@ import {
   YieldOpportunity,
   AgentConfig,
   RiskAssessment,
+  RiskFactor,
 } from '../types';
+
+// LLM Configuration
+const TREASURY_SYSTEM_PROMPT = `You are the Treasury Agent for AgentTreasury, an autonomous DAO CFO system.
+
+Your role:
+- Manage a multi-million dollar USDt treasury vault on Ethereum
+- Optimize yield across DeFi protocols (Aave, Compound)
+- Enforce security constraints: max 10k USDt/day withdrawal, 1k USDt per tx
+- Protect funds via multi-sig, timelocks, and risk assessment
+
+Your personality:
+- Conservative with capital preservation as priority #1
+- Data-driven: always cite numbers in reasoning
+- Risk-aware: flag concerns proactively
+- Concise: keep responses focused and actionable
+
+Always respond in valid JSON matching the requested schema.`;
 
 // Contract ABIs (simplified)
 const TREASURY_VAULT_ABI = [
@@ -56,6 +74,7 @@ export class TreasuryAgent {
   private config: AgentConfig;
   private lastState: TreasuryState | null = null;
   private monitoringInterval: NodeJS.Timeout | null = null;
+  private decisionMemory: Array<{ role: string; action: string; reasoning: string; timestamp: number }> = [];
 
   constructor(
     config: AgentConfig,
@@ -322,42 +341,45 @@ export class TreasuryAgent {
   ): Promise<YieldOpportunity | null> {
     try {
       const state = this.lastState;
-      
-      const prompt = `
-You are a DeFi yield optimization expert. Analyze these yield opportunities and select the best one.
+      const memoryContext = this.decisionMemory.slice(-5)
+        .map(m => `[${new Date(m.timestamp).toISOString()}] ${m.action}: ${m.reasoning}`)
+        .join('\n');
+
+      const prompt = `Analyze these yield opportunities and select the best one.
 
 Current Treasury State:
 - Balance: ${ethers.formatUnits(state?.balance || '0', 6)} USDt
 - Daily Volume: ${ethers.formatUnits(state?.dailyVolume || '0', 6)} USDt
+- Pending Transactions: ${state?.pendingTransactions.length || 0}
 
 Yield Opportunities:
-${opportunities.map(o => `
-- ${o.protocol}: ${o.apy}% APY, TVL: $${o.tvl}, Risk: ${o.risk}
-`).join('')}
+${opportunities.map(o => `- ${o.protocol}: ${o.apy}% APY, TVL: $${Number(o.tvl).toLocaleString()}, Risk: ${o.risk}`).join('\n')}
 
-Selection Criteria:
-1. Higher APY is better
-2. Lower risk is better
-3. Higher TVL indicates stability
-4. Diversification across protocols
-
-Respond with ONLY the protocol name (aave or compound) or "none" if no opportunity is suitable.
-`;
+${memoryContext ? `Recent Decisions:\n${memoryContext}\n` : ''}
+Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`;
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [{ role: 'user', content: prompt }],
+        model: this.config.llmModel,
+        messages: [
+          { role: 'system', content: TREASURY_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
         temperature: 0.3,
-        max_tokens: 50,
+        max_tokens: 150,
       });
 
-      const selection = response.choices[0]?.message?.content?.trim().toLowerCase();
-      
-      if (selection === 'none') {
+      const content = response.choices[0]?.message?.content?.trim() || '';
+      const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
+
+      if (!json.protocol || json.protocol === 'null' || json.protocol === 'none') {
+        this.remember('yield_evaluation', json.reasoning || 'No suitable opportunity found');
         return null;
       }
 
-      const selected = opportunities.find(o => o.protocol === selection);
+      const selected = opportunities.find(o => o.protocol === json.protocol);
+      if (selected) {
+        this.remember('yield_selection', json.reasoning || `Selected ${json.protocol}`);
+      }
       return selected || null;
     } catch (error) {
       logger.error('LLM yield selection error, using deterministic fallback', { error });
@@ -367,7 +389,11 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
         const riskDiff = (riskOrder[a.risk] ?? 1) - (riskOrder[b.risk] ?? 1);
         return riskDiff !== 0 ? riskDiff : b.apy - a.apy;
       });
-      return sorted[0] || null;
+      const pick = sorted[0] || null;
+      if (pick) {
+        this.remember('yield_selection', `[deterministic] Selected ${pick.protocol} at ${pick.apy}% APY (lowest risk, highest APY)`);
+      }
+      return pick;
     }
   }
 
@@ -494,10 +520,10 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
   }
 
   /**
-   * Assess treasury risk
+   * Assess treasury risk — combines heuristic scoring with LLM analysis
    */
   async assessRisk(): Promise<RiskAssessment> {
-    const factors: any[] = [];
+    const factors: RiskFactor[] = [];
     let score = 100;
 
     // Check balance
@@ -523,6 +549,58 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
       score -= 15;
     }
 
+    // Check pending txs concentration
+    const pendingCount = this.lastState?.pendingTransactions.length || 0;
+    if (pendingCount > 5) {
+      factors.push({
+        name: 'pending_tx_backlog',
+        impact: -10,
+        description: `${pendingCount} pending transactions in queue`,
+      });
+      score -= 10;
+    }
+
+    // LLM risk assessment overlay
+    try {
+      const prompt = `Assess the risk of this treasury state. Consider concentration, velocity, and anomalies.
+
+State:
+- Balance: ${ethers.formatUnits(this.lastState?.balance || '0', 6)} USDt
+- Daily Volume: ${ethers.formatUnits(this.lastState?.dailyVolume || '0', 6)} / 10,000 USDt limit
+- Pending Txs: ${pendingCount}
+- Yield Positions: ${this.lastState?.yieldPositions.length || 0}
+- Heuristic Score: ${score}/100
+- Existing Factors: ${factors.map(f => f.name).join(', ') || 'none'}
+
+Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "description": "<text>"}], "summary": "<1 sentence>"}`;
+
+      const response = await this.openai.chat.completions.create({
+        model: this.config.llmModel,
+        messages: [
+          { role: 'system', content: TREASURY_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.2,
+        max_tokens: 200,
+      });
+
+      const content = response.choices[0]?.message?.content?.trim() || '';
+      const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
+
+      const adj = Math.min(Math.max(json.adjustment || 0, -20), 10);
+      score += adj;
+
+      if (json.factors) {
+        for (const f of json.factors) {
+          factors.push({ name: f.name, impact: adj, description: f.description });
+        }
+      }
+
+      this.remember('risk_assessment', json.summary || `Risk score: ${score}`);
+    } catch {
+      // LLM unavailable — heuristic-only is fine
+    }
+
     // Determine recommendation
     let recommendation: 'proceed' | 'caution' | 'reject';
     if (score >= 80) {
@@ -534,14 +612,15 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
     }
 
     const assessment: RiskAssessment = {
-      score,
+      score: Math.max(0, Math.min(100, score)),
       factors,
       recommendation,
     };
 
     EventBus.emitEvent('treasury:risk_assessed', 'treasury', {
-      score,
+      score: assessment.score,
       recommendation,
+      factorCount: factors.length,
     });
 
     return assessment;
@@ -679,6 +758,16 @@ Respond with ONLY the protocol name (aave or compound) or "none" if no opportuni
         logger.error('Harvest failed', { err });
       }
     });
+  }
+
+  /**
+   * Store a decision in short-term memory (last 10 entries)
+   */
+  private remember(action: string, reasoning: string): void {
+    this.decisionMemory.push({ role: 'treasury', action, reasoning, timestamp: Date.now() });
+    if (this.decisionMemory.length > 10) {
+      this.decisionMemory.shift();
+    }
   }
 
   /**

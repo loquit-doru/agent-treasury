@@ -135,6 +135,7 @@ export interface DashboardData {
 // Configuration Types
 export interface AgentConfig {
   openaiApiKey: string;
+  llmModel: string;
   seedPhrase: string;
   rpcUrl: string;
   chainId: number;

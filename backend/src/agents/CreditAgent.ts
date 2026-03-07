@@ -18,6 +18,23 @@ import {
   CreditTier,
 } from '../types';
 
+// LLM Configuration
+const CREDIT_SYSTEM_PROMPT = `You are the Credit Agent for AgentTreasury, an autonomous DAO CFO system.
+
+Your role:
+- Evaluate on-chain credit profiles for DeFi borrowers
+- Score wallets 0-1000 based on tx history, volume, age, and repayment
+- Make binary APPROVE/DECLINE decisions on borrow requests
+- Protect the treasury from over-extension and defaults
+
+Your personality:
+- Fair but cautious: give credit where earned, deny when risk is high
+- Data-driven: cite specific numbers from the profile
+- Protective: treasury capital preservation is your #1 concern
+- Concise: keep reasoning to 1-3 sentences
+
+Always respond in valid JSON matching the requested schema.`;
+
 // Contract ABIs (simplified)
 const CREDIT_LINE_ABI = [
   'function updateProfile(address user, uint256 transactionCount, uint256 volumeUSD, uint256 accountAge, uint256 repaidLoans, uint256 defaults)',
@@ -53,6 +70,7 @@ export class CreditAgent {
   private profiles: Map<string, CreditProfile> = new Map();
   private loans: Map<number, Loan> = new Map();
   private monitoringInterval: NodeJS.Timeout | null = null;
+  private decisionMemory: Array<{ role: string; action: string; reasoning: string; timestamp: number }> = [];
 
   constructor(
     config: AgentConfig,
@@ -290,14 +308,16 @@ export class CreditAgent {
     baseScore: number
   ): Promise<{ adjustment: number; reasoning: string }> {
     try {
-      const prompt = `
-You are a credit risk analyst for a DeFi lending protocol. Analyze this user's on-chain history.
+      const memoryContext = this.decisionMemory.slice(-5)
+        .map(m => `[${new Date(m.timestamp).toISOString()}] ${m.action}: ${m.reasoning}`)
+        .join('\n');
 
-User Address: ${address}
+      const prompt = `Analyze this wallet's creditworthiness.
 
+Wallet: ${address}
 On-Chain History:
 - Transaction Count: ${history.transactionCount}
-- Total Volume: $${history.volumeUSD}
+- Total Volume: $${history.volumeUSD.toLocaleString()}
 - Account Age: ${history.accountAge} days
 - Repaid Loans: ${history.repaidLoans}
 - Defaults: ${history.defaults}
@@ -305,41 +325,40 @@ On-Chain History:
 Base Score: ${baseScore}/1000
 
 Credit Tiers:
-- 800+: Excellent (5k limit, 5% APR)
-- 600-799: Good (2k limit, 10% APR)
-- <600: Poor (500 limit, 15% APR)
+- 800+: Excellent (5k USDt, 5% APR)
+- 600-799: Good (2k USDt, 10% APR)
+- <600: Poor (500 USDt, 15% APR)
 
-Provide your analysis in this format:
-ADJUSTMENT: [number between -50 and +50]
-REASONING: [2-3 sentences explaining the score]
-`;
+${memoryContext ? `Recent Decisions:\n${memoryContext}\n` : ''}
+Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [{ role: 'user', content: prompt }],
+        model: this.config.llmModel,
+        messages: [
+          { role: 'system', content: CREDIT_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
         temperature: 0.3,
         max_tokens: 200,
       });
 
-      const content = response.choices[0]?.message?.content || '';
+      const content = response.choices[0]?.message?.content?.trim() || '';
+      const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
 
-      // Parse adjustment
-      const adjustmentMatch = content.match(/ADJUSTMENT:\s*([+-]?\d+)/i);
-      const adjustment = adjustmentMatch ? parseInt(adjustmentMatch[1]) : 0;
+      const adjustment = Math.min(Math.max(json.adjustment || 0, -50), 50);
+      const reasoning = json.reasoning || 'Score based on on-chain activity analysis.';
 
-      // Parse reasoning
-      const reasoningMatch = content.match(/REASONING:\s*(.+)/is);
-      const reasoning = reasoningMatch
-        ? reasoningMatch[1].trim()
-        : 'Score based on on-chain activity analysis.';
+      this.remember('credit_analysis', reasoning);
 
-      return {
-        adjustment: Math.min(Math.max(adjustment, -50), 50),
-        reasoning,
-      };
+      return { adjustment, reasoning };
     } catch (error) {
       logger.error('LLM analysis error', { error });
-      return { adjustment: 0, reasoning: 'Base score used without adjustment.' };
+      // Deterministic fallback with descriptive reasoning
+      let reasoning = `Base score ${baseScore} used (LLM unavailable). `;
+      if (history.defaults > 0) reasoning += `Warning: ${history.defaults} default(s) on record. `;
+      if (history.repaidLoans > 0) reasoning += `Positive: ${history.repaidLoans} repaid loan(s). `;
+      if (history.transactionCount > 50) reasoning += `Active wallet (${history.transactionCount} txs). `;
+      return { adjustment: 0, reasoning: reasoning.trim() };
     }
   }
 
@@ -501,34 +520,55 @@ REASONING: [2-3 sentences explaining the score]
     profile: CreditProfile
   ): Promise<boolean> {
     try {
-      const prompt = `
-You are a lending risk analyst. Evaluate this borrow request.
+      const utilizationPct = BigInt(profile.limit) > 0n
+        ? Number((BigInt(profile.borrowed) * 100n) / BigInt(profile.limit))
+        : 0;
+
+      const memoryContext = this.decisionMemory.slice(-3)
+        .map(m => `[${new Date(m.timestamp).toISOString()}] ${m.action}: ${m.reasoning}`)
+        .join('\n');
+
+      const prompt = `Evaluate this borrow request.
 
 Borrower: ${address}
-Requested Amount: ${ethers.formatUnits(amount, 6)} USDt
+Requested: ${ethers.formatUnits(amount, 6)} USDt
 Credit Score: ${profile.score}/1000
-Credit Limit: ${ethers.formatUnits(profile.limit, 6)} USDt
-Current Borrowed: ${ethers.formatUnits(profile.borrowed, 6)} USDt
-Available Credit: ${ethers.formatUnits(profile.available, 6)} USDt
+Limit: ${ethers.formatUnits(profile.limit, 6)} USDt
+Already Borrowed: ${ethers.formatUnits(profile.borrowed, 6)} USDt (${utilizationPct}% utilization)
+Available: ${ethers.formatUnits(profile.available, 6)} USDt
 Interest Rate: ${profile.rate / 100}%
 
-Respond with ONLY "APPROVE" or "DECLINE".
-`;
+${memoryContext ? `Recent Decisions:\n${memoryContext}\n` : ''}
+Respond in JSON: {"decision": "APPROVE" or "DECLINE", "reasoning": "<1 sentence>"}`;
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [{ role: 'user', content: prompt }],
+        model: this.config.llmModel,
+        messages: [
+          { role: 'system', content: CREDIT_SYSTEM_PROMPT },
+          { role: 'user', content: prompt },
+        ],
         temperature: 0.2,
-        max_tokens: 10,
+        max_tokens: 100,
       });
 
-      const decision = response.choices[0]?.message?.content?.trim().toUpperCase();
-      
-      return decision === 'APPROVE';
+      const content = response.choices[0]?.message?.content?.trim() || '';
+      const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
+
+      const approved = json.decision?.toUpperCase() === 'APPROVE';
+      this.remember(
+        approved ? 'borrow_approved' : 'borrow_declined',
+        json.reasoning || `${approved ? 'Approved' : 'Declined'} ${ethers.formatUnits(amount, 6)} USDt for ${address}`,
+      );
+      return approved;
     } catch (error) {
       logger.error('LLM borrow evaluation error', { error });
-      // Default to approve if under limit
-      return amount <= BigInt(profile.available);
+      // Deterministic fallback: approve if within available credit
+      const approved = amount <= BigInt(profile.available);
+      this.remember(
+        approved ? 'borrow_approved' : 'borrow_declined',
+        `[deterministic] ${approved ? 'Approved' : 'Declined'}: amount ${approved ? 'within' : 'exceeds'} available credit`,
+      );
+      return approved;
     }
   }
 
@@ -748,6 +788,16 @@ Respond with ONLY "APPROVE" or "DECLINE".
         await this.processBorrow(address, BigInt(amount));
       }
     });
+  }
+
+  /**
+   * Store a decision in short-term memory (last 10 entries)
+   */
+  private remember(action: string, reasoning: string): void {
+    this.decisionMemory.push({ role: 'credit', action, reasoning, timestamp: Date.now() });
+    if (this.decisionMemory.length > 10) {
+      this.decisionMemory.shift();
+    }
   }
 
   /**

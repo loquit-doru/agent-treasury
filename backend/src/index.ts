@@ -24,6 +24,7 @@ dotenv.config();
 // Configuration
 const config: AgentConfig = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
+  llmModel: process.env.LLM_MODEL || 'gpt-4',
   seedPhrase: process.env.WDK_SEED_PHRASE || '',
   rpcUrl: process.env.RPC_URL || 'https://rpc.sepolia.org',
   chainId: parseInt(process.env.CHAIN_ID || '11155111'),
