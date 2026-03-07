@@ -9,6 +9,9 @@ import {
   History,
   TrendingDown,
   Upload,
+  ArrowDownCircle,
+  ArrowUpCircle,
+  AlertCircle,
 } from 'lucide-react';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { formatAmount, formatPercentage } from '../utils/format';
@@ -42,6 +45,17 @@ export default function WalletPage() {
   const [txHash, setTxHash] = useState<string | null>(null);
   
   const [lookupAddress, setLookupAddress] = useState('');
+
+  // Borrow state
+  const [borrowAmount, setBorrowAmount] = useState('');
+  const [isBorrowing, setIsBorrowing] = useState(false);
+  const [borrowResult, setBorrowResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Repay state
+  const [repayLoanId, setRepayLoanId] = useState<number | null>(null);
+  const [repayAmount, setRepayAmount] = useState('');
+  const [isRepaying, setIsRepaying] = useState(false);
+  const [repayResult, setRepayResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Sync lookup address with connected address initially
   useEffect(() => {
@@ -78,6 +92,64 @@ export default function WalletPage() {
         }
     } catch (err) {
         console.error(err);
+    }
+  };
+
+  const handleBorrow = async () => {
+    const target = lookupAddress || address;
+    if (!target || !borrowAmount || isNaN(Number(borrowAmount)) || Number(borrowAmount) <= 0) return;
+    setIsBorrowing(true);
+    setBorrowResult(null);
+    try {
+      const wei = parseUnits(borrowAmount, 6).toString();
+      const res = await fetch(`/api/credit/${target}/borrow`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: wei }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBorrowResult({ success: true, message: `Borrowed ${borrowAmount} USDt — Loan #${data.data.id}` });
+        setBorrowAmount('');
+        // Refresh credit + loans
+        checkCreditScore();
+        fetchLoans();
+      } else {
+        setBorrowResult({ success: false, message: data.error || 'Borrow declined' });
+      }
+    } catch {
+      setBorrowResult({ success: false, message: 'Network error' });
+    } finally {
+      setIsBorrowing(false);
+    }
+  };
+
+  const handleRepay = async (loanId: number) => {
+    const target = lookupAddress || address;
+    if (!target || !repayAmount || isNaN(Number(repayAmount)) || Number(repayAmount) <= 0) return;
+    setIsRepaying(true);
+    setRepayResult(null);
+    try {
+      const wei = parseUnits(repayAmount, 6).toString();
+      const res = await fetch(`/api/credit/${target}/repay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loanId, amount: wei }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setRepayResult({ success: true, message: `Repaid ${repayAmount} USDt on Loan #${loanId}` });
+        setRepayAmount('');
+        setRepayLoanId(null);
+        fetchLoans();
+        checkCreditScore();
+      } else {
+        setRepayResult({ success: false, message: data.error || 'Repayment failed' });
+      }
+    } catch {
+      setRepayResult({ success: false, message: 'Network error' });
+    } finally {
+      setIsRepaying(false);
     }
   };
 
@@ -350,6 +422,44 @@ export default function WalletPage() {
                                <p className="text-lg font-bold text-white">{formatAmount(creditProfile.borrowed)} <span className="text-xs text-gray-400 font-medium">USDt</span></p>
                             </div>
                          </div>
+
+                         {/* Borrow Form */}
+                         {BigInt(creditProfile.available) > 0n && (
+                           <div className="bg-gray-950/60 rounded-xl p-4 border border-blue-900/30">
+                              <div className="flex items-center gap-2 mb-3">
+                                 <ArrowDownCircle className="w-4 h-4 text-blue-400" />
+                                 <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider">Borrow USDt</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                 <div className="relative flex-1">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0"
+                                      value={borrowAmount}
+                                      onChange={(e) => setBorrowAmount(e.target.value)}
+                                      placeholder={`Max ${formatAmount(creditProfile.available)}`}
+                                      className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 font-mono"
+                                    />
+                                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-medium text-gray-500 uppercase">USDt</span>
+                                 </div>
+                                 <button
+                                    onClick={handleBorrow}
+                                    disabled={isBorrowing || !borrowAmount || Number(borrowAmount) <= 0}
+                                    className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                 >
+                                    {isBorrowing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ArrowDownCircle className="w-3.5 h-3.5" />}
+                                    {isBorrowing ? 'Processing...' : 'Borrow'}
+                                 </button>
+                              </div>
+                              {borrowResult && (
+                                <div className={`mt-3 p-2.5 rounded-lg flex items-start gap-2 text-xs ${borrowResult.success ? 'bg-green-950/30 border border-green-900/50 text-green-400' : 'bg-red-950/30 border border-red-900/50 text-red-400'}`}>
+                                   {borrowResult.success ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                                   <span>{borrowResult.message}</span>
+                                </div>
+                              )}
+                           </div>
+                         )}
                          
                          <div className="pt-2">
                             <div className="flex w-full items-center gap-2 mb-2 sm:mb-0">
@@ -424,6 +534,53 @@ export default function WalletPage() {
                                       <p className="text-xs font-semibold text-red-500/70 uppercase tracking-widest">Total Due</p>
                                       <p className="text-sm font-bold text-red-400">{formatAmount(loan.totalDue)} USDt</p>
                                   </div>
+                               </div>
+
+                               {/* Repay inline */}
+                               <div className="mt-4 pt-4 border-t border-gray-800/80">
+                                  {repayLoanId === loan.id ? (
+                                     <div className="flex items-center gap-2">
+                                        <div className="relative flex-1">
+                                           <input
+                                              type="number"
+                                              step="0.01"
+                                              min="0"
+                                              value={repayAmount}
+                                              onChange={(e) => setRepayAmount(e.target.value)}
+                                              placeholder={`Max ${formatAmount(loan.totalDue)}`}
+                                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-green-500/50 font-mono"
+                                           />
+                                           <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-medium text-gray-500 uppercase">USDt</span>
+                                        </div>
+                                        <button
+                                           onClick={() => handleRepay(loan.id)}
+                                           disabled={isRepaying || !repayAmount || Number(repayAmount) <= 0}
+                                           className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-green-500 px-3 py-2 text-sm font-bold text-gray-950 hover:bg-green-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                           {isRepaying ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ArrowUpCircle className="w-3.5 h-3.5" />}
+                                           {isRepaying ? 'Paying...' : 'Pay'}
+                                        </button>
+                                        <button
+                                           onClick={() => { setRepayLoanId(null); setRepayAmount(''); setRepayResult(null); }}
+                                           className="shrink-0 text-xs text-gray-500 hover:text-gray-300 px-2 py-2"
+                                        >
+                                           Cancel
+                                        </button>
+                                     </div>
+                                  ) : (
+                                     <button
+                                        onClick={() => { setRepayLoanId(loan.id); setRepayResult(null); }}
+                                        className="inline-flex items-center gap-1.5 text-sm font-semibold text-green-400 hover:text-green-300 transition-colors"
+                                     >
+                                        <ArrowUpCircle className="w-4 h-4" /> Repay This Loan
+                                     </button>
+                                  )}
+                                  {repayResult && repayLoanId === loan.id && (
+                                     <div className={`mt-2 p-2.5 rounded-lg flex items-start gap-2 text-xs ${repayResult.success ? 'bg-green-950/30 border border-green-900/50 text-green-400' : 'bg-red-950/30 border border-red-900/50 text-red-400'}`}>
+                                        {repayResult.success ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                                        <span>{repayResult.message}</span>
+                                     </div>
+                                  )}
                                </div>
                             </div>
                          ))}
