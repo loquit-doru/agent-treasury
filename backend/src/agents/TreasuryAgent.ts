@@ -88,9 +88,8 @@ export class TreasuryAgent {
     
     this.openai = new OpenAI({
       apiKey: config.openaiApiKey,
+      ...(config.llmBaseUrl ? { baseURL: config.llmBaseUrl } : {}),
     });
-
-    // Contracts still use ethers for ABI-level calls
     // WDK handles wallet/signing; ethers reads contract state
     this.vaultContract = new ethers.Contract(
       config.treasuryVaultAddress,

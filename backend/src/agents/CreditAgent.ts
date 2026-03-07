@@ -84,9 +84,8 @@ export class CreditAgent {
     
     this.openai = new OpenAI({
       apiKey: config.openaiApiKey,
+      ...(config.llmBaseUrl ? { baseURL: config.llmBaseUrl } : {}),
     });
-
-    // Read-only contract handle; writes go through WDK
     this.creditContract = new ethers.Contract(
       config.creditLineAddress,
       CREDIT_LINE_ABI,
