@@ -1,5 +1,5 @@
 /**
- * ZK Credit Proof — Zero-Knowledge proof that a credit score meets a tier threshold
+ * ZK-Inspired Credit Proof — Proves a credit score meets a tier threshold
  * without revealing the exact score.
  *
  * Scheme (hash-based commitment + range proof):
@@ -7,8 +7,12 @@
  *   2. Prover generates range proof: "score ≥ threshold" using bit-decomposition
  *   3. Verifier checks commitment + range proof without learning the exact score
  *
- * This is a simplified but cryptographically valid ZK range proof suitable for
- * a hackathon demonstration. Production systems would use SNARKs/STARKs.
+ * This is a lightweight ZK-inspired privacy layer using commitment schemes and
+ * range proofs. It demonstrates the core ZK concept (prove a statement without
+ * revealing the witness) using standard cryptographic primitives.
+ *
+ * Production implementation would use Circom + snarkjs for full zk-SNARK
+ * verification with a trusted setup and circuit-level guarantees.
  */
 
 import { createHash, randomBytes } from 'crypto';

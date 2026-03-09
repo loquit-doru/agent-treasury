@@ -113,7 +113,7 @@ export class AgentDialogue {
   /**
    * Run a single dialogue round between the two agents
    */
-  private async runDialogueRound(): Promise<void> {
+  async runDialogueRound(): Promise<void> {
     const topic = DIALOGUE_TOPICS[this.roundCount % DIALOGUE_TOPICS.length];
     this.roundCount++;
 

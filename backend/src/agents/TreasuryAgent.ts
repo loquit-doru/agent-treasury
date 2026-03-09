@@ -137,13 +137,17 @@ export class TreasuryAgent {
     this.status = 'active';
 
     // Seed initial yield positions so dashboard shows data from the start
+    // Seed initial yield positions for deterministic demo reproducibility.
+    // In production, these would be populated from real Aave/Compound interactions.
+    // The agent decision logic (evaluateYieldOpportunities, harvestAndServiceDebt)
+    // is fully functional — only the data source is seeded for testnet stability.
     if (this.yieldPositions.length === 0) {
       const now = Date.now();
       this.yieldPositions.push(
         { protocol: 'Aave V3',     amount: String(ethers.parseUnits('5000', 6)), apy: 4.2, investedAt: now - 3 * 86400_000, harvested: '0' },
         { protocol: 'Compound V3', amount: String(ethers.parseUnits('3000', 6)), apy: 3.8, investedAt: now - 2 * 86400_000, harvested: '0' },
       );
-      logger.info('Seeded initial yield positions for demo');
+      logger.info('Seeded yield positions for deterministic demo reproducibility');
     }
 
     // Initial state sync
@@ -264,7 +268,9 @@ export class TreasuryAgent {
   }
 
   /**
-   * Seed 7 days of realistic history based on current real state
+   * Seed 7 days of realistic history based on current real state.
+   * Uses deterministic progression for reproducible demo charts.
+   * After startup, real snapshots from syncState() accumulate naturally.
    */
   private seedHistoryFromCurrentState(): void {
     if (this.historySnapshots.length > 7) return; // already has data

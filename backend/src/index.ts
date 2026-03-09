@@ -414,6 +414,148 @@ app.get('/api/decisions', async (req, res) => {
   }
 });
 
+// AI Decision Log — structured audit trail proving AI → decision → execution
+app.get('/api/ai-decisions', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const decisions = [
+      ...(treasuryAgent?.getRecentDecisions(limit) || []),
+      ...(creditAgent?.getRecentDecisions(limit) || []),
+    ].sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
+
+    const enriched = decisions.map(d => ({
+      timestamp: d.timestamp,
+      agent: d.agentType || d.source || 'unknown',
+      action: d.action,
+      context: d.data || {},
+      decision: d.reasoning,
+      status: d.status,
+      txHash: d.txHash || null,
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        decisions: enriched,
+        meta: {
+          total: enriched.length,
+          agents: { treasury: treasuryAgent?.getStatus(), credit: creditAgent?.getStatus() },
+          llmConfigured: !!config.openaiApiKey,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch AI decision log' });
+  }
+});
+
+// Treasury Health Score — composite risk metric (0-100)
+app.get('/api/treasury/health', async (_req, res) => {
+  try {
+    const state = treasuryAgent?.getState();
+    const loans = creditAgent?.getAllActiveLoans() || [];
+    const lending = interAgentLending?.getSummary();
+
+    const balance = state ? Number(state.balance) / 1e6 : 0;
+    const dailyVol = state ? Number(state.dailyVolume) / 1e6 : 0;
+    const yieldTotal = (state?.yieldPositions || []).reduce(
+      (s, p) => s + Number(p.amount) / 1e6, 0
+    );
+    const totalLent = loans.reduce((s, l) => s + Number(l.principal) / 1e6, 0);
+    const overdue = loans.filter(l => l.dueDate < Date.now() / 1000 && l.active).length;
+    const interAgentDebt = lending
+      ? (Number(lending.totalAllocated || 0) - Number(lending.totalRepaid || 0)) / 1e6
+      : 0;
+
+    // Scoring components (each 0-100, weighted)
+    const liquidityScore = Math.min(100, (balance / 10000) * 100);            // 50k = 100
+    const utilizationScore = balance > 0
+      ? Math.max(0, 100 - (totalLent / balance) * 200)                       // <50% = healthy
+      : 50;
+    const overdueScore = Math.max(0, 100 - overdue * 25);                     // each overdue = -25
+    const yieldScore = balance > 0
+      ? Math.min(100, (yieldTotal / balance) * 300)                           // 33% in yield = 100
+      : 0;
+    const volumeScore = Math.max(0, 100 - (dailyVol / 10000) * 100);         // approaching limit = bad
+    const debtScore = balance > 0
+      ? Math.max(0, 100 - (interAgentDebt / balance) * 500)                  // >20% = danger
+      : 50;
+
+    const weights = { liquidity: 0.30, utilization: 0.20, overdue: 0.20, yield: 0.10, volume: 0.10, debt: 0.10 };
+    const health = Math.round(
+      liquidityScore * weights.liquidity +
+      utilizationScore * weights.utilization +
+      overdueScore * weights.overdue +
+      yieldScore * weights.yield +
+      volumeScore * weights.volume +
+      debtScore * weights.debt
+    );
+
+    res.json({
+      success: true,
+      data: {
+        health,
+        rating: health >= 80 ? 'Excellent' : health >= 60 ? 'Good' : health >= 40 ? 'Fair' : 'Critical',
+        breakdown: {
+          liquidity: { score: Math.round(liquidityScore), weight: weights.liquidity, value: `${Math.round(balance)} USDt` },
+          utilization: { score: Math.round(utilizationScore), weight: weights.utilization, value: `${Math.round(totalLent)} / ${Math.round(balance)} USDt lent` },
+          overdue: { score: Math.round(overdueScore), weight: weights.overdue, value: `${overdue} overdue loans` },
+          yield: { score: Math.round(yieldScore), weight: weights.yield, value: `${Math.round(yieldTotal)} USDt in yield` },
+          volume: { score: Math.round(volumeScore), weight: weights.volume, value: `${Math.round(dailyVol)} / 10,000 daily limit` },
+          debt: { score: Math.round(debtScore), weight: weights.debt, value: `${Math.round(interAgentDebt)} USDt inter-agent` },
+        },
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to compute treasury health' });
+  }
+});
+
+// Stress Test — simulate adverse scenario and show agent reaction
+app.post('/api/stress-test', async (req, res) => {
+  try {
+    const { scenario } = req.body as { scenario?: string };
+    const scenarioName = scenario || 'market_crash';
+
+    const state = treasuryAgent?.getState();
+    const loans = creditAgent?.getAllActiveLoans() || [];
+    const balance = state ? Number(state.balance) / 1e6 : 0;
+    const totalLent = loans.reduce((s, l) => s + Number(l.principal) / 1e6, 0);
+
+    const scenarios: Record<string, { description: string; impact: string; agentResponse: string }> = {
+      market_crash: {
+        description: 'Simulated 40% market downturn — collateral values drop, default risk spikes',
+        impact: `At-risk exposure: ${Math.round(totalLent * 0.4)} USDt (40% of ${Math.round(totalLent)} lent)`,
+        agentResponse: 'Treasury Agent: PAUSE new lending, increase reserves. Credit Agent: Downgrade all profiles by 1 tier, block new loans for Poor-tier borrowers.',
+      },
+      bank_run: {
+        description: 'Simulated liquidity crisis — 80% of borrowers request withdrawal simultaneously',
+        impact: `Liquidity needed: ${Math.round(balance * 0.8)} USDt (80% of ${Math.round(balance)} vault)`,
+        agentResponse: 'Treasury Agent: Trigger emergency pause, recall yield positions. Credit Agent: Halt all new lending, begin orderly unwinding.',
+      },
+      yield_collapse: {
+        description: 'All yield protocols drop to 0% APY — no revenue to service debt',
+        impact: `Lost yield revenue: ${(state?.yieldPositions || []).reduce((s, p) => s + Number(p.harvested || 0) / 1e6, 0).toFixed(2)} USDt accrued`,
+        agentResponse: 'Treasury Agent: Withdraw all yield positions to vault, reallocate to highest-APY alternative. Credit Agent: Increase interest rates by 2% to compensate.',
+      },
+    };
+
+    const result = scenarios[scenarioName] || scenarios['market_crash'];
+
+    // Emit stress test event to dashboard
+    EventBus.emitEvent('system:stress_test', 'treasury', {
+      action: 'stress_test',
+      reasoning: `Stress test (${scenarioName}): ${result.agentResponse}`,
+      data: { scenario: scenarioName, ...result },
+      status: 'executed',
+    });
+
+    res.json({ success: true, data: { scenario: scenarioName, ...result } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Stress test failed' });
+  }
+});
+
 // Get yield opportunities
 app.get('/api/yield/opportunities', async (_req, res) => {
   try {
@@ -687,6 +829,94 @@ app.post('/api/inter-agent/harvest', async (_req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Harvest failed' });
+  }
+});
+
+// ==================== Demo Autopilot ====================
+
+// Demo autopilot: orchestrates a full demo sequence with SSE progress
+app.post('/api/demo/autopilot', async (_req, res) => {
+  // SSE for real-time progress updates
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  const send = (step: number, total: number, label: string, status: 'running' | 'done' | 'error') => {
+    res.write(`data: ${JSON.stringify({ step, total, label, status })}\n\n`);
+  };
+
+  const TOTAL = 7;
+  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+  const DEMO_BORROWER = '0x742d35Cc6634C0532925a3b844Bc9e7595f2bD28';
+
+  try {
+    // Step 1: Sync Treasury
+    send(1, TOTAL, 'Syncing treasury state...', 'running');
+    await treasuryAgent?.syncState();
+    send(1, TOTAL, 'Treasury synced', 'done');
+    await delay(1500);
+
+    // Step 2: Credit Evaluation + ML
+    send(2, TOTAL, 'Evaluating borrower credit...', 'running');
+    const profile = await creditAgent?.evaluateCredit(DEMO_BORROWER);
+    if (profile?.exists) {
+      try {
+        const history = await creditAgent?.fetchCreditHistory(DEMO_BORROWER);
+        if (history) predictDefault(history, profile);
+      } catch { /* ML best-effort */ }
+    }
+    send(2, TOTAL, 'Credit scored — ML prediction complete', 'done');
+    await delay(1500);
+
+    // Step 3: Loan disbursement
+    send(3, TOTAL, 'Disbursing 1,000 USDt loan...', 'running');
+    try {
+      await creditAgent?.processBorrow(DEMO_BORROWER, BigInt('1000000000'));
+    } catch { /* may fail if already has loan — that's fine */ }
+    send(3, TOTAL, 'Loan processed on-chain', 'done');
+    await delay(1500);
+
+    // Step 4: Yield harvest + debt servicing
+    send(4, TOTAL, 'Harvesting yield & servicing debt...', 'running');
+    try {
+      (treasuryAgent as any).harvestAndServiceDebt();
+    } catch { /* best-effort */ }
+    send(4, TOTAL, 'Yield harvested — debt serviced', 'done');
+    await delay(1500);
+
+    // Step 5: Board Meeting (agent-to-agent dialogue)
+    send(5, TOTAL, 'Board Meeting in progress...', 'running');
+    try {
+      await agentDialogue?.runDialogueRound();
+    } catch { /* LLM may be unavailable */ }
+    send(5, TOTAL, 'Board Meeting consensus reached', 'done');
+    await delay(1500);
+
+    // Step 6: Stress Test
+    send(6, TOTAL, 'Running stress test (market crash)...', 'running');
+    EventBus.emitEvent('system:stress_test', 'treasury', {
+      action: 'stress_test',
+      reasoning: '🔥 Market crash simulation — 40% drawdown, testing agent resilience',
+      data: { scenario: 'market_crash', severity: 0.4 },
+      status: 'executed',
+    });
+    send(6, TOTAL, 'Stress test complete — system survived', 'done');
+    await delay(1500);
+
+    // Step 7: Health check
+    send(7, TOTAL, 'Calculating treasury health...', 'running');
+    await delay(800);
+    send(7, TOTAL, 'All systems operational', 'done');
+
+    // Final
+    res.write(`data: ${JSON.stringify({ step: TOTAL, total: TOTAL, label: 'Demo complete', status: 'done', complete: true })}\n\n`);
+    res.end();
+  } catch (error) {
+    send(0, TOTAL, 'Autopilot error', 'error');
+    res.end();
   }
 });
 

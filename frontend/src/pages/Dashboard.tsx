@@ -11,6 +11,9 @@ import {
   Activity,
   CheckCircle2,
   XCircle,
+  Shield,
+  Flame,
+  Play,
 } from 'lucide-react';
 import { LiveLogs } from '../components/LiveLogs';
 import { BonusFeatures } from '../components/BonusFeatures';
@@ -62,6 +65,19 @@ const pauseAgents = async () => {
   }
 };
 
+type HealthData = {
+  score: number;
+  rating: string;
+  breakdown: Record<string, { score: number; weight: number; weighted: number }>;
+};
+
+type StressResult = {
+  scenario: string;
+  description: string;
+  impact: Record<string, unknown>;
+  agentResponse: Record<string, unknown>;
+};
+
 export default function Dashboard() {
   const { data, isLoading, error, refresh } = useDashboard();
   const { isConnected, lastMessage } = useWebSocket(WS_URL);
@@ -74,6 +90,53 @@ export default function Dashboard() {
   
   // Historical balance data for the chart (last 24 updates)
   const [balanceHistory, setBalanceHistory] = useState<{ time: string, balance: number }[]>([]);
+
+  // Treasury Health
+  const [healthData, setHealthData] = useState<HealthData | null>(null);
+
+  // Stress Test
+  const [stressResult, setStressResult] = useState<StressResult | null>(null);
+  const [stressTesting, setStressTesting] = useState(false);
+
+  // Demo Autopilot
+  const [autopilot, setAutopilot] = useState<{ running: boolean; step: number; total: number; label: string } | null>(null);
+
+  // Fetch treasury health
+  useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch(apiUrl('/api/treasury/health'));
+        if (res.ok) {
+          const d = await res.json();
+          setHealthData(d);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const triggerStressTest = async () => {
+    setStressTesting(true);
+    setStressResult(null);
+    try {
+      const res = await fetch(apiUrl('/api/stress-test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario: 'market_crash' }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setStressResult(d);
+        setTimeout(() => setStressResult(null), 12000);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setStressTesting(false);
+    }
+  };
 
   // Live "seconds ago" counter
   const [lastFetch, setLastFetch] = useState<number>(Date.now());
@@ -214,6 +277,51 @@ export default function Dashboard() {
                <PauseCircle className="w-4 h-4" />
                Emergency Pause
              </button>
+             <button
+               onClick={triggerStressTest}
+               disabled={stressTesting}
+               className="inline-flex items-center gap-2 rounded-lg bg-orange-500/10 border border-orange-500/20 px-4 py-2 text-sm font-medium text-orange-400 hover:bg-orange-500/20 transition-all hover:scale-105 disabled:opacity-50"
+             >
+               <Flame className="w-4 h-4" />
+               {stressTesting ? 'Running...' : 'Stress Test'}
+             </button>
+             <button
+               onClick={() => {
+                 if (autopilot?.running) return;
+                 setAutopilot({ running: true, step: 0, total: 7, label: 'Starting...' });
+                 fetch(apiUrl('/api/demo/autopilot'), { method: 'POST' })
+                   .then(async (res) => {
+                     const reader = res.body?.getReader();
+                     const decoder = new TextDecoder();
+                     if (!reader) return;
+                     let buffer = '';
+                     while (true) {
+                       const { done, value } = await reader.read();
+                       if (done) break;
+                       buffer += decoder.decode(value, { stream: true });
+                       const lines = buffer.split('\n');
+                       buffer = lines.pop() || '';
+                       for (const line of lines) {
+                         if (line.startsWith('data: ')) {
+                           try {
+                             const ev = JSON.parse(line.slice(6));
+                             setAutopilot({ running: !ev.complete, step: ev.step, total: ev.total, label: ev.label });
+                             if (ev.complete) {
+                               setTimeout(() => setAutopilot(null), 4000);
+                             }
+                           } catch { /* ignore parse errors */ }
+                         }
+                       }
+                     }
+                   })
+                   .catch(() => setAutopilot(null));
+               }}
+               disabled={!!autopilot?.running}
+               className="inline-flex items-center gap-2 rounded-lg bg-green-500/10 border border-green-500/20 px-4 py-2 text-sm font-medium text-green-400 hover:bg-green-500/20 transition-all hover:scale-105 disabled:opacity-50"
+             >
+               <Play className="w-4 h-4" />
+               {autopilot?.running ? `Step ${autopilot.step}/${autopilot.total}` : 'Demo Autopilot'}
+             </button>
          </div>
       </div>
 
@@ -266,6 +374,78 @@ export default function Dashboard() {
           value={String(data?.creditProfiles?.length ?? 0)}
           sub={`${data?.activeLoans?.length ?? 0} active loans`}
         />
+      </div>
+
+      {/* Treasury Health & Stress Test Result */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Health Score */}
+        <div className="lg:col-span-2 bg-gray-800 border border-gray-700 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <Shield className="w-5 h-5" style={{ color: healthData ? (healthData.score >= 80 ? '#22c55e' : healthData.score >= 60 ? '#eab308' : healthData.score >= 40 ? '#f97316' : '#ef4444') : '#6b7280' }} />
+            <span className="text-xs text-gray-400 uppercase tracking-widest font-semibold">Treasury Health Score</span>
+          </div>
+          <div className="flex items-center gap-6">
+            <div className="flex items-baseline gap-2">
+              <span className="text-5xl font-black tabular-nums" style={{ color: healthData ? (healthData.score >= 80 ? '#22c55e' : healthData.score >= 60 ? '#eab308' : healthData.score >= 40 ? '#f97316' : '#ef4444') : '#6b7280' }}>
+                {healthData?.score ?? '—'}
+              </span>
+              <span className="text-lg text-gray-500 font-medium">/100</span>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${
+              !healthData ? 'bg-gray-700 text-gray-400'
+              : healthData.score >= 80 ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : healthData.score >= 60 ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+              : healthData.score >= 40 ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+              : 'bg-red-500/20 text-red-400 border border-red-500/30'
+            }`}>
+              {healthData?.rating ?? 'Loading...'}
+            </span>
+            {/* Health bar */}
+            <div className="flex-1 hidden sm:block">
+              <div className="h-3 bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-1000 ease-out"
+                  style={{
+                    width: `${healthData?.score ?? 0}%`,
+                    backgroundColor: healthData ? (healthData.score >= 80 ? '#22c55e' : healthData.score >= 60 ? '#eab308' : healthData.score >= 40 ? '#f97316' : '#ef4444') : '#6b7280'
+                  }}
+                />
+              </div>
+              {healthData?.breakdown && (
+                <div className="flex gap-3 mt-2 text-[10px] text-gray-500">
+                  {Object.entries(healthData.breakdown).slice(0, 4).map(([key, val]) => (
+                    <span key={key} className="capitalize">{key.replace(/_/g, ' ')}: {Math.round(val.score * 100)}%</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Stress Test Panel */}
+        <div className={`bg-gray-800 border rounded-xl p-5 shadow-sm flex flex-col items-center justify-center text-center transition-all duration-500 ${
+          stressResult ? 'border-orange-500/50 bg-orange-500/5' : 'border-gray-700'
+        }`}>
+          {stressResult ? (
+            <>
+              <Flame className="w-8 h-8 text-orange-400 mb-2 animate-pulse" />
+              <h4 className="text-sm font-bold text-orange-300 mb-1">Market Crash Simulated</h4>
+              <p className="text-xs text-gray-400 mb-2">{stressResult.description}</p>
+              <div className="text-[11px] text-gray-500 space-y-0.5">
+                <p>Vault loss: <span className="text-red-400 font-semibold">${String(stressResult.impact && (stressResult.impact as Record<string, number>).vaultLoss ? ((stressResult.impact as Record<string, number>).vaultLoss / 1e6).toFixed(0) : '?')}k</span></p>
+                <p>Survival: <span className={`font-semibold ${
+                  stressResult.agentResponse && (stressResult.agentResponse as Record<string, boolean>).survives ? 'text-green-400' : 'text-red-400'
+                }`}>{stressResult.agentResponse && (stressResult.agentResponse as Record<string, boolean>).survives ? '✓ System survives' : '✗ Critical'}</span></p>
+              </div>
+            </>
+          ) : (
+            <>
+              <Flame className="w-8 h-8 text-gray-600 mb-2" />
+              <h4 className="text-sm font-semibold text-gray-400 mb-1">Stress Test</h4>
+              <p className="text-[11px] text-gray-500">Simulate a market crash to test agent resilience</p>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Charts Row */}
@@ -453,14 +633,14 @@ export default function Dashboard() {
                          decision.agentType === 'treasury' ? 'bg-cyan-500' : 'bg-emerald-500'
                       } ${i === 0 ? 'animate-ping-slow' : ''}`} />
                       
-                      <div className="flex flex-col gap-1 min-w-0">
+                      <div className="flex flex-col gap-1 min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2 mb-0.5">
-                           <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-800/50 ${
+                           <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-800/50 shrink-0 ${
                              decision.agentType === 'treasury' ? 'text-cyan-400' : 'text-emerald-400'
                            }`}>
                              {decision.agentType}
                            </span>
-                           <span className="text-[10px] text-gray-500 font-mono">
+                           <span className="text-[10px] text-gray-500 font-mono shrink-0">
                              {new Date(decision.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                            </span>
                         </div>
@@ -469,21 +649,21 @@ export default function Dashboard() {
                            {(decision.action || 'Unknown Action').replace(/_/g, ' ')}
                         </h4>
                         
-                        <p className="text-[12px] text-gray-400 leading-relaxed mt-0.5 break-words overflow-hidden line-clamp-3">
+                        <p className="text-[12px] text-gray-400 leading-relaxed mt-0.5 break-words">
                           {decision.reasoning}
                         </p>
                         
                         {(decision.status === 'failed' || decision.txHash) && (
-                          <div className="mt-2 flex items-center gap-3">
+                          <div className="mt-2 flex items-center gap-2 flex-wrap text-[10px]">
                             {decision.status === 'failed' && (
-                               <div className="text-[10px] text-red-400 flex items-center gap-1 font-medium bg-red-400/10 px-1.5 py-0.5 rounded border border-red-400/20">
+                               <div className="text-red-400 flex items-center gap-1 font-medium bg-red-400/10 px-1.5 py-0.5 rounded border border-red-400/20">
                                   <XCircle className="w-3 h-3 shrink-0" /> Failed
                                </div>
                             )}
                             {decision.txHash && (
-                               <div className="text-[10px] text-gray-500 font-mono bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800/50 truncate max-w-[150px]">
+                               <div className="text-gray-500 font-mono bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800/50 truncate max-w-full">
                                   Tx: {decision.txHash.slice(0,6)}...{decision.txHash.slice(-4)}
-                               </div>
+                                </div>
                             )}
                           </div>
                         )}
@@ -510,6 +690,31 @@ export default function Dashboard() {
             <p className="text-sm text-gray-400">
               Connecting to agents...
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Autopilot progress bar */}
+      {autopilot && (
+        <div className="fixed top-0 left-0 right-0 z-50">
+          <div className="h-1 bg-gray-800">
+            <div
+              className="h-full bg-green-500 transition-all duration-700 ease-out"
+              style={{ width: `${autopilot.total > 0 ? (autopilot.step / autopilot.total) * 100 : 0}%` }}
+            />
+          </div>
+          <div className="bg-gray-900/95 backdrop-blur border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {autopilot.running ? (
+                <RefreshCw className="w-4 h-4 text-green-400 animate-spin" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-green-400" />
+              )}
+              <span className="text-sm text-white font-medium">{autopilot.label}</span>
+            </div>
+            <span className="text-xs text-gray-500 font-mono tabular-nums">
+              {autopilot.step}/{autopilot.total}
+            </span>
           </div>
         </div>
       )}
