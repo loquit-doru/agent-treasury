@@ -44,15 +44,18 @@ const normalizeDecision = (raw: Record<string, unknown>): AgentDecision => {
   };
 };
 
+import { apiUrl } from '../utils/api';
+
 export default function Analytics() {
   const { data } = useDashboard();
   
   // Need to fetch full decision log for historical agent performance
   const [historicalDecisions, setHistoricalDecisions] = useState<AgentDecision[]>([]);
   const [opportunities, setOpportunities] = useState<any[]>([]);
+  const [treasuryHistory, setTreasuryHistory] = useState<Array<{ timestamp: number; balance: number; volume: number; yieldTotal: number }>>([]);
   
   useEffect(() => {
-     fetch('/api/decisions?limit=100')
+     fetch(apiUrl('/api/decisions?limit=100'))
        .then(res => res.json())
        .then(data => {
           if (data.success && data.data) {
@@ -61,11 +64,20 @@ export default function Analytics() {
        })
        .catch(console.error);
 
-     fetch('/api/yield/opportunities')
+     fetch(apiUrl('/api/yield/opportunities'))
        .then(res => res.json())
        .then(data => {
           if (data.success && data.data) {
              setOpportunities(data.data);
+          }
+       })
+       .catch(console.error);
+
+     fetch(apiUrl('/api/treasury/history'))
+       .then(res => res.json())
+       .then(data => {
+          if (data.success && data.data) {
+             setTreasuryHistory(data.data);
           }
        })
        .catch(console.error);
@@ -85,21 +97,23 @@ export default function Analytics() {
 
   // --- Chart Data Preparation ---
 
-  // 1. Treasury Overview (Mocking historical data based on current balance for visual effect,
-  // since the API doesn't provide full historical balance timeseries in a single call)
+  // 1. Treasury Balance History (real data from backend)
   const currentBalance = treasury ? Number(treasury.balance) / 1e6 : 0;
-  const treasuryHistoryData = Array.from({ length: 7 }).map((_, i) => ({
-    day: new Date(Date.now() - (6 - i) * 86400000).toLocaleDateString([], { weekday: 'short' }),
-    // Generate a line that trends towards current balance
-    balance: currentBalance > 0 ? currentBalance * (0.8 + (i * 0.03) + (Math.random() * 0.05)) : 0
-  }));
+  const treasuryHistoryData = treasuryHistory.length > 0
+    ? treasuryHistory.map(h => ({
+        day: new Date(h.timestamp).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }),
+        balance: h.balance,
+      }))
+    : [{ day: 'Now', balance: currentBalance }];
 
-  // 2. Daily Volume (Mocking last 7 days based on current volume)
+  // 2. Daily Volume (real data from backend)
   const currentVolume = treasury ? Number(treasury.dailyVolume) / 1e6 : 0;
-  const volumeData = Array.from({ length: 7 }).map((_, i) => ({
-    day: new Date(Date.now() - (6 - i) * 86400000).toLocaleDateString([], { weekday: 'short' }),
-    volume: currentVolume > 0 ? (i === 6 ? currentVolume : currentVolume * (0.3 + Math.random() * 0.7)) : 0
-  }));
+  const volumeData = treasuryHistory.length > 0
+    ? treasuryHistory.map(h => ({
+        day: new Date(h.timestamp).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }),
+        volume: h.volume,
+      }))
+    : [{ day: 'Now', volume: currentVolume }];
 
   // 3. Yield Performance (Compare APYs)
   const yieldData = treasury?.yieldPositions.map(p => ({
@@ -371,7 +385,7 @@ export default function Analytics() {
                                  {opp.protocol}
                               </td>
                               <td className="px-4 py-3 text-gray-400">
-                                 {opp.strategy.replace(/_/g, ' ')}
+                                 {(opp.strategy || 'unknown').replace(/_/g, ' ')}
                               </td>
                               <td className="px-4 py-3 text-right text-purple-400 font-medium">
                                  {(opp.apy * 100).toFixed(2)}%

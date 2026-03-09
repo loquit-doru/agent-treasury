@@ -84,3 +84,52 @@ export interface WebSocketMessage {
   data: unknown;
   timestamp: number;
 }
+
+// ========== Bonus Feature Types ==========
+
+export interface DefaultPrediction {
+  probability: number;
+  confidence: number;
+  riskBucket: 'low' | 'medium' | 'high' | 'critical';
+  featureImportance: { feature: string; contribution: number }[];
+  modelVersion: string;
+}
+
+export interface ZKProof {
+  commitment: string;
+  tierName: string;
+  tierThreshold: number;
+  rangeProof: {
+    bitCommitments: string[];
+    challenge: string;
+    responses: string[];
+  };
+}
+
+export interface InterAgentLoan {
+  id: string;
+  amount: string;
+  reason: string;
+  status: 'pending' | 'allocated' | 'repaid' | 'declined';
+  requestedAt: number;
+  resolvedAt?: number;
+}
+
+export interface InterAgentSummary {
+  totalAllocated: string;
+  totalRepaid: string;
+  activeLoans: number;
+  declinedRequests: number;
+}
+
+export interface InterAgentPoolStatus {
+  availableCapital: string;
+  outstandingLoans: string;
+  poolUtilization: number;
+}
+
+export interface DialogueRound {
+  agent: string;
+  message: string;
+  timestamp: number;
+}

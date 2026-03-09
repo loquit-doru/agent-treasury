@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { useAccount, useBalance } from 'wagmi';
-import { BrowserProvider, Contract, parseUnits } from 'ethers';
+import { useState, useEffect, useCallback } from 'react';
+import { BrowserProvider, Contract, parseUnits, formatUnits, formatEther } from 'ethers';
+import { apiUrl } from '../utils/api';
 import {
   Wallet,
   Activity,
@@ -12,14 +12,44 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   AlertCircle,
+  LogOut,
 } from 'lucide-react';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { formatAmount, formatPercentage } from '../utils/format';
-import type { CreditProfile, Loan } from '../types';
+import type { CreditProfile, Loan, DefaultPrediction } from '../types';
 
 // Constants using Vite Env
 const TREASURY_VAULT_ADDRESS = import.meta.env.VITE_TREASURY_VAULT_ADDRESS || '0xVaultAddress';
 const USDT_ADDRESS = import.meta.env.VITE_USDT_ADDRESS || '0xUSDTAddress';
+const EXPECTED_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID || '31337');
+const CHAIN_NAME = import.meta.env.VITE_CHAIN_NAME || 'AgentTreasury Local';
+const RPC_URL = 'http://127.0.0.1:8545';
+
+/** Ensure MetaMask is on the correct chain; auto-add if missing */
+async function ensureCorrectChain(): Promise<void> {
+  if (!window.ethereum) return;
+  const hexChainId = '0x' + EXPECTED_CHAIN_ID.toString(16);
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: hexChainId }],
+    });
+  } catch (switchErr: unknown) {
+    // 4902 = chain not added yet
+    if ((switchErr as { code?: number }).code === 4902) {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: hexChainId,
+          chainName: CHAIN_NAME,
+          rpcUrls: [RPC_URL],
+          nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+        }],
+      });
+    } else {
+      throw switchErr;
+    }
+  }
+}
 
 // Contract ABIs
 const VAULT_ABI = [
@@ -33,9 +63,64 @@ const ERC20_ABI = [
 ];
 
 export default function WalletPage() {
-  const { address, isConnected } = useAccount();
-  const { data: ethBalance } = useBalance({ address });
-  const { data: usdtBalance } = useBalance({ address, token: USDT_ADDRESS as `0x${string}` });
+  const [address, setAddress] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [ethBal, setEthBal] = useState<string | null>(null);
+  const [usdtBal, setUsdtBal] = useState<string | null>(null);
+
+  const connectWallet = useCallback(async () => {
+    if (!window.ethereum) { alert('Please install MetaMask'); return; }
+    try {
+      localStorage.removeItem('wallet-disconnected');
+      await ensureCorrectChain();
+      const provider = new BrowserProvider(window.ethereum);
+      const accounts = await provider.send('eth_requestAccounts', []);
+      const addr = accounts[0] as string;
+      setAddress(addr);
+      setIsConnected(true);
+      // Fetch balances
+      const eth = await provider.getBalance(addr);
+      setEthBal(formatEther(eth));
+      const usdt = new Contract(USDT_ADDRESS, ERC20_ABI, provider);
+      const bal = await usdt.balanceOf(addr);
+      setUsdtBal(formatUnits(bal, 6));
+    } catch (err) {
+      console.error('Wallet connect failed:', err);
+    }
+  }, []);
+
+  const disconnectWallet = useCallback(async () => {
+    localStorage.setItem('wallet-disconnected', 'true');
+    // Try revoking MetaMask permissions so eth_accounts returns []
+    try {
+      await window.ethereum?.request({
+        method: 'wallet_revokePermissions',
+        params: [{ eth_accounts: {} }],
+      });
+    } catch {
+      // Older MetaMask versions don't support this — flag handles it
+    }
+    setAddress(null);
+    setIsConnected(false);
+    setEthBal(null);
+    setUsdtBal(null);
+    setCreditProfile(null);
+    setLoans([]);
+    setLookupAddress('');
+    setTxHash(null);
+    setBorrowResult(null);
+    setRepayResult(null);
+  }, []);
+
+  // Auto-connect if already authorized (skip if user explicitly disconnected)
+  useEffect(() => {
+    if (window.ethereum && !localStorage.getItem('wallet-disconnected')) {
+      const provider = new BrowserProvider(window.ethereum);
+      provider.send('eth_accounts', []).then((accs: string[]) => {
+        if (accs.length > 0) connectWallet();
+      }).catch(() => {});
+    }
+  }, [connectWallet]);
 
   const [isCheckingCredit, setIsCheckingCredit] = useState(false);
   const [creditProfile, setCreditProfile] = useState<CreditProfile | null>(null);
@@ -57,6 +142,13 @@ export default function WalletPage() {
   const [isRepaying, setIsRepaying] = useState(false);
   const [repayResult, setRepayResult] = useState<{ success: boolean; message: string } | null>(null);
 
+  // ML Prediction state (populated from evaluate response)
+  const [mlPrediction, setMlPrediction] = useState<DefaultPrediction | null>(null);
+
+  // Loan history state (all loans including repaid/defaulted)
+  const [loanHistory, setLoanHistory] = useState<Loan[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+
   // Sync lookup address with connected address initially
   useEffect(() => {
     if (address && !lookupAddress) {
@@ -67,7 +159,7 @@ export default function WalletPage() {
   // Fetch initial user data (only if profile exists already)
   useEffect(() => {
     if (address && isConnected) {
-      fetch(`/api/credit/${address}`)
+      fetch(apiUrl(`/api/credit/${address}`))
         .then(res => res.json())
         .then(data => {
             if (data.success && data.data && data.data.exists) {
@@ -84,11 +176,27 @@ export default function WalletPage() {
   }, [address, isConnected]);
 
   const fetchLoans = async () => {
+    const target = lookupAddress || address;
+    if (!target) return;
     try {
-        const res = await fetch(`/api/loans`);
+        const res = await fetch(apiUrl(`/api/credit/${target}/loans`));
         const data = await res.json();
         if (data.success) {
             setLoans(data.data as Loan[]);
+        }
+    } catch (err) {
+        console.error(err);
+    }
+  };
+
+  const fetchLoanHistory = async () => {
+    const target = lookupAddress || address;
+    if (!target) return;
+    try {
+        const res = await fetch(apiUrl(`/api/credit/${target}/history`));
+        const data = await res.json();
+        if (data.success) {
+            setLoanHistory(data.data as Loan[]);
         }
     } catch (err) {
         console.error(err);
@@ -102,7 +210,7 @@ export default function WalletPage() {
     setBorrowResult(null);
     try {
       const wei = parseUnits(borrowAmount, 6).toString();
-      const res = await fetch(`/api/credit/${target}/borrow`, {
+      const res = await fetch(apiUrl(`/api/credit/${target}/borrow`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amount: wei }),
@@ -131,7 +239,7 @@ export default function WalletPage() {
     setRepayResult(null);
     try {
       const wei = parseUnits(repayAmount, 6).toString();
-      const res = await fetch(`/api/credit/${target}/repay`, {
+      const res = await fetch(apiUrl(`/api/credit/${target}/repay`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ loanId, amount: wei }),
@@ -157,10 +265,11 @@ export default function WalletPage() {
     if (!lookupAddress) return;
     setIsCheckingCredit(true);
     try {
-      const res = await fetch(`/api/credit/${lookupAddress}/evaluate`, { method: 'POST' });
+      const res = await fetch(apiUrl(`/api/credit/${lookupAddress}/evaluate`), { method: 'POST' });
       const data = await res.json();
       if (data.success) {
         setCreditProfile(data.data as CreditProfile);
+        if (data.data.mlPrediction) setMlPrediction(data.data.mlPrediction as DefaultPrediction);
         fetchLoans();
       }
     } catch (err) {
@@ -182,6 +291,7 @@ export default function WalletPage() {
     setIsDepositing(true);
     setTxHash(null);
     try {
+      await ensureCorrectChain();
       // 1. Setup Ethers Provider & Signer
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
@@ -204,9 +314,20 @@ export default function WalletPage() {
 
       setTxHash(depositTx.hash);
       setDepositAmount('');
-    } catch (err) {
-      console.error(err);
-      alert("Transaction failed. Check console for details.");
+
+      // Refresh balances after deposit
+      const newBal = await usdtContract.balanceOf(address);
+      setUsdtBal(formatUnits(newBal, 6));
+    } catch (err: unknown) {
+      console.error('Deposit error:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('user rejected') || msg.includes('ACTION_REJECTED')) {
+        alert('Transaction cancelled by user.');
+      } else if (msg.includes('insufficient')) {
+        alert('Insufficient USDt balance.');
+      } else {
+        alert(`Deposit failed: ${msg.slice(0, 120)}`);
+      }
     } finally {
       setIsDepositing(false);
     }
@@ -253,23 +374,31 @@ export default function WalletPage() {
 
                 {isConnected ? (
                   <div className="space-y-4">
+                     <button
+                        onClick={disconnectWallet}
+                        className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-gray-800 px-3 py-2 text-xs font-medium text-gray-400 hover:bg-gray-700 hover:text-white transition-all border border-gray-700"
+                     >
+                        <LogOut className="w-3.5 h-3.5" /> Disconnect Wallet
+                     </button>
                      <div className="bg-gray-950/50 rounded-xl p-4 border border-gray-800/50">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">ETH Balance</p>
                         <p className="text-xl font-bold text-white">
-                           {ethBalance ? Number(ethBalance.formatted).toFixed(4) : '0.0000'} <span className="text-sm text-gray-400 font-medium">ETH</span>
+                           {ethBal ? Number(ethBal).toFixed(4) : '0.0000'} <span className="text-sm text-gray-400 font-medium">ETH</span>
                         </p>
                      </div>
                      <div className="bg-gray-950/50 rounded-xl p-4 border border-gray-800/50">
                         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">USDt Balance</p>
                         <p className="text-xl font-bold text-white">
-                           {usdtBalance ? Number(usdtBalance.formatted).toFixed(2) : '0.00'} <span className="text-sm text-gray-400 font-medium">USDt</span>
+                           {usdtBal ? Number(usdtBal).toFixed(2) : '0.00'} <span className="text-sm text-gray-400 font-medium">USDt</span>
                         </p>
                      </div>
                   </div>
                 ) : (
                   <div className="py-8 flex flex-col items-center justify-center text-center">
                      <p className="text-sm text-gray-500 mb-4">Connect wallet to view balances</p>
-                     <ConnectButton />
+                     <button onClick={connectWallet} className="inline-flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-400 transition-all">
+                        <Wallet className="w-4 h-4" /> Connect MetaMask
+                     </button>
                   </div>
                 )}
             </div>
@@ -330,7 +459,9 @@ export default function WalletPage() {
                       <Activity className="w-12 h-12 text-gray-700 mb-4" />
                       <h3 className="text-lg font-semibold text-white mb-2">Credit System Locked</h3>
                       <p className="text-sm text-gray-400 max-w-sm mx-auto mb-6">Connect your wallet to evaluate your on-chain history and access uncollateralized credit lines.</p>
-                      <ConnectButton />
+                      <button onClick={connectWallet} className="inline-flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-400 transition-all">
+                        <Wallet className="w-4 h-4" /> Connect MetaMask
+                      </button>
                    </div>
                 ) : !creditProfile ? (
                    <div className="h-full min-h-[250px] flex flex-col items-center justify-center text-center">
@@ -403,6 +534,31 @@ export default function WalletPage() {
                             </div>
                             <p className="text-sm text-gray-400">Last updated: {new Date(creditProfile.lastUpdated).toLocaleString()}</p>
                          </div>
+
+                         {/* ML Risk Assessment Badge */}
+                         {mlPrediction && (
+                           <div className={`rounded-xl p-4 border ${
+                             mlPrediction.riskBucket === 'low' ? 'bg-green-950/20 border-green-900/40' :
+                             mlPrediction.riskBucket === 'medium' ? 'bg-yellow-950/20 border-yellow-900/40' :
+                             mlPrediction.riskBucket === 'high' ? 'bg-orange-950/20 border-orange-900/40' :
+                             'bg-red-950/20 border-red-900/40'
+                           }`}>
+                             <div className="flex items-center justify-between">
+                               <div className="flex items-center gap-2">
+                                 <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">ML Risk</span>
+                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                   mlPrediction.riskBucket === 'low' ? 'text-green-400 bg-green-500/10' :
+                                   mlPrediction.riskBucket === 'medium' ? 'text-yellow-400 bg-yellow-500/10' :
+                                   mlPrediction.riskBucket === 'high' ? 'text-orange-400 bg-orange-500/10' :
+                                   'text-red-400 bg-red-500/10'
+                                 }`}>
+                                   {mlPrediction.riskBucket}
+                                 </span>
+                               </div>
+                               <span className="text-xs text-gray-400">Default probability: <span className="font-bold text-white">{(mlPrediction.probability * 100).toFixed(2)}%</span></span>
+                             </div>
+                           </div>
+                         )}
 
                          <div className="grid grid-cols-2 gap-4">
                             <div className="bg-gray-950/60 rounded-xl p-4 border border-gray-800/60">
@@ -502,7 +658,15 @@ export default function WalletPage() {
                       </div>
                    ) : (
                       <div className="space-y-4">
-                         {activeLoans.map(loan => (
+                         {activeLoans.map(loan => {
+                            const repaidBig = BigInt(loan.repaid || '0');
+                            const principalBig = BigInt(loan.principal);
+                            const repayPercent = principalBig > 0n ? Number((repaidBig * 100n) / principalBig) : 0;
+                            const nowSec = Math.floor(Date.now() / 1000);
+                            const daysLeft = Math.max(0, Math.ceil((loan.dueDate - nowSec) / 86400));
+                            const isUrgent = daysLeft <= 3;
+
+                            return (
                             <div key={loan.id} className="bg-gray-950/50 border border-gray-800 rounded-xl p-5 hover:border-gray-700 transition-colors">
                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                                   <div>
@@ -521,6 +685,9 @@ export default function WalletPage() {
                                      <div className="text-right">
                                         <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest mb-0.5">Due Date</p>
                                         <p className="text-sm font-medium text-gray-300">{new Date(loan.dueDate * 1000).toLocaleDateString()}</p>
+                                        <span className={`text-[10px] font-bold ${isUrgent ? 'text-red-400' : 'text-gray-500'}`}>
+                                          {daysLeft}d left
+                                        </span>
                                      </div>
                                      <div className="text-right hidden sm:block">
                                         <p className="text-[10px] font-semibold text-red-500/70 uppercase tracking-widest mb-0.5">Total Due</p>
@@ -535,6 +702,19 @@ export default function WalletPage() {
                                       <p className="text-sm font-bold text-red-400">{formatAmount(loan.totalDue)} USDt</p>
                                   </div>
                                </div>
+
+                               {/* Repayment Progress */}
+                               {repaidBig > 0n && (
+                                 <div className="mt-3">
+                                   <div className="flex items-center justify-between mb-1">
+                                     <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Repaid</span>
+                                     <span className="text-[10px] text-gray-400 font-mono">{formatAmount(loan.repaid || '0')} / {formatAmount(loan.principal)} USDt ({repayPercent}%)</span>
+                                   </div>
+                                   <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                     <div className="h-full bg-green-500 rounded-full transition-all duration-500" style={{ width: `${Math.min(repayPercent, 100)}%` }} />
+                                   </div>
+                                 </div>
+                               )}
 
                                {/* Repay inline */}
                                <div className="mt-4 pt-4 border-t border-gray-800/80">
@@ -583,8 +763,52 @@ export default function WalletPage() {
                                   )}
                                </div>
                             </div>
-                         ))}
+                            );
+                         })}
                       </div>
+                   )}
+                </div>
+            )}
+
+            {/* Loan History Toggle */}
+            {isConnected && creditProfile && (
+                <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6">
+                   <button
+                     onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchLoanHistory(); }}
+                     className="flex items-center gap-2 w-full text-left"
+                   >
+                      <History className="w-5 h-5 text-gray-400" />
+                      <h3 className="text-sm font-semibold text-white">Loan History</h3>
+                      <span className="ml-auto text-xs text-gray-500">{showHistory ? '▲ Hide' : '▼ Show'}</span>
+                   </button>
+
+                   {showHistory && (
+                     <div className="mt-4 pt-4 border-t border-gray-800/80">
+                       {loanHistory.filter(l => !l.active).length === 0 ? (
+                         <p className="text-sm text-gray-500 text-center py-4">No past loans found.</p>
+                       ) : (
+                         <div className="space-y-3">
+                           {loanHistory.filter(l => !l.active).map(loan => {
+                             const wasDefaulted = BigInt(loan.repaid || '0') < BigInt(loan.principal);
+                             return (
+                               <div key={loan.id} className={`bg-gray-950/50 border rounded-xl p-4 ${wasDefaulted ? 'border-red-900/40' : 'border-green-900/40'}`}>
+                                 <div className="flex items-center justify-between">
+                                   <div className="flex items-center gap-2">
+                                     <span className="text-sm font-bold text-white">{formatAmount(loan.principal)} USDt</span>
+                                     <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                       wasDefaulted ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'
+                                     }`}>
+                                       {wasDefaulted ? 'Defaulted' : 'Repaid'}
+                                     </span>
+                                   </div>
+                                   <span className="text-xs text-gray-500">{new Date(loan.borrowedAt * 1000).toLocaleDateString()}</span>
+                                 </div>
+                               </div>
+                             );
+                           })}
+                         </div>
+                       )}
+                     </div>
                    )}
                 </div>
             )}

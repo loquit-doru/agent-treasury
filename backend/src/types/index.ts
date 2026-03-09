@@ -124,12 +124,27 @@ export interface ApiResponse<T> {
   error?: string;
 }
 
+export interface DialogueTurn {
+  speaker: 'treasury' | 'credit' | 'consensus';
+  message: string;
+  timestamp: number;
+}
+
+export interface DialogueRound {
+  topic: string;
+  topicPrompt: string;
+  turns: DialogueTurn[];
+  consensus: string;
+  timestamp: number;
+}
+
 export interface DashboardData {
   treasury: TreasuryState;
   creditProfiles: CreditProfile[];
   activeLoans: Loan[];
   agentDecisions: AgentDecision[];
   agentStatus: Record<AgentType, AgentStatus>;
+  dialogueRounds: DialogueRound[];
 }
 
 // Configuration Types
@@ -137,7 +152,12 @@ export interface AgentConfig {
   openaiApiKey: string;
   llmModel: string;
   llmBaseUrl?: string;
+  llmFallbackApiKey?: string;
+  llmFallbackModel?: string;
+  llmFallbackBaseUrl?: string;
+  llmFallbackName?: string;
   seedPhrase: string;
+  privateKey?: string;
   rpcUrl: string;
   chainId: number;
   treasuryVaultAddress: string;

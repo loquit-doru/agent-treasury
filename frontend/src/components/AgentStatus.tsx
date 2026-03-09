@@ -43,7 +43,7 @@ export function AgentStatus({ status, wsConnected }: AgentStatusProps) {
 
   return (
     <div className="flex items-center gap-3">
-      {/* WebSocket Status */}
+      {/* Connection Status */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 rounded-lg">
         {wsConnected ? (
           <Wifi className="w-4 h-4 text-green-400" />
@@ -51,7 +51,7 @@ export function AgentStatus({ status, wsConnected }: AgentStatusProps) {
           <WifiOff className="w-4 h-4 text-red-400" />
         )}
         <span className={`text-xs font-medium ${wsConnected ? 'text-green-400' : 'text-red-400'}`}>
-          {wsConnected ? 'Live' : 'Offline'}
+          {wsConnected ? 'Live' : 'Connecting...'}
         </span>
       </div>
 

@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { DashboardData } from '../types';
+import { apiUrl } from '../utils/api';
 
 interface UseDashboardReturn {
   data: DashboardData | null;
@@ -11,8 +12,6 @@ interface UseDashboardReturn {
   error: string | null;
   refresh: () => Promise<void>;
 }
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export function useDashboard(): UseDashboardReturn {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -24,7 +23,7 @@ export function useDashboard(): UseDashboardReturn {
       setIsLoading(true);
       setError(null);
 
-      const response = await fetch(`${API_URL}/api/dashboard`);
+      const response = await fetch(apiUrl('/api/dashboard'));
       const result = await response.json();
 
       if (result.success) {

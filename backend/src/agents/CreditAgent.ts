@@ -5,7 +5,8 @@
 
 import { ethers } from 'ethers';
 import type WDK from '@tetherto/wdk';
-import OpenAI from 'openai';
+import { LLMClient } from '../services/LLMClient';
+import { predictDefault, type DefaultPrediction } from '../services/DefaultPredictor';
 import EventBus from '../orchestrator/EventBus';
 import logger from '../utils/logger';
 import {
@@ -39,7 +40,9 @@ Always respond in valid JSON matching the requested schema.`;
 const CREDIT_LINE_ABI = [
   'function updateProfile(address user, uint256 transactionCount, uint256 volumeUSD, uint256 accountAge, uint256 repaidLoans, uint256 defaults)',
   'function borrow(uint256 amount)',
+  'function borrowFor(address borrower, uint256 amount)',
   'function repay(uint256 loanId, uint256 amount)',
+  'function repayFor(address borrower, uint256 loanId, uint256 amount)',
   'function markDefaulted(uint256 loanId)',
   'function calculateInterest(uint256 loanId) view returns (uint256)',
   'function getAmountDue(uint256 loanId) view returns (uint256)',
@@ -60,32 +63,37 @@ const CREDIT_TIERS: CreditTier[] = [
   { minScore: 0, limit: ethers.parseUnits('500', 6).toString(), rate: 1500, name: 'Poor' },
 ];
 
+// ABI helpers for WDK encoding
+const CREDIT_LINE_IFACE = new ethers.Interface(CREDIT_LINE_ABI);
+const ERC20_IFACE = new ethers.Interface([
+  'function approve(address spender, uint256 amount) returns (bool)',
+]);
+
 export class CreditAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
   private wdkAccount: any;
   private creditContract: ethers.Contract;
-  private openai: OpenAI;
+  private llm: LLMClient;
   private config: AgentConfig;
   private profiles: Map<string, CreditProfile> = new Map();
   private loans: Map<number, Loan> = new Map();
   private monitoringInterval: NodeJS.Timeout | null = null;
   private decisionMemory: Array<{ role: string; action: string; reasoning: string; timestamp: number }> = [];
+  private borrowLocks: Set<string> = new Set();
+  private static readonly GRACE_PERIOD_SECONDS = 24 * 3600; // 24h grace before default
 
   constructor(
     config: AgentConfig,
     provider: ethers.Provider,
     _wdk: WDK,
     wdkAccount: any,
+    llmClient: LLMClient,
   ) {
     this.config = config;
     this.provider = provider;
     this.wdkAccount = wdkAccount;
-    
-    this.openai = new OpenAI({
-      apiKey: config.openaiApiKey,
-      ...(config.llmBaseUrl ? { baseURL: config.llmBaseUrl } : {}),
-    });
+    this.llm = llmClient;
     this.creditContract = new ethers.Contract(
       config.creditLineAddress,
       CREDIT_LINE_ABI,
@@ -93,6 +101,34 @@ export class CreditAgent {
     );
 
     this.setupEventListeners();
+  }
+
+  /**
+   * Send a write transaction via WDK; if WDK fails, fallback to ethers signer.
+   * Returns the tx hash on success.
+   */
+  private async sendWriteTx(to: string, data: string, label: string): Promise<string> {
+    // Primary path: WDK
+    try {
+      const result = await this.wdkAccount.sendTransaction({ to, value: '0', data });
+      const hash: string = result.hash ?? result;
+      logger.info(`[WDK] ${label} succeeded`, { hash });
+      return hash;
+    } catch (wdkErr) {
+      logger.warn(`[WDK] ${label} failed, falling back to ethers signer`, {
+        error: wdkErr instanceof Error ? wdkErr.message : String(wdkErr),
+      });
+    }
+
+    // Fallback: ethers Wallet from private key (preferred) or seed phrase
+    const signer = this.config.privateKey
+      ? new ethers.Wallet(this.config.privateKey, this.provider as ethers.JsonRpcProvider)
+      : ethers.Wallet.fromPhrase(this.config.seedPhrase).connect(this.provider as ethers.JsonRpcProvider);
+    const tx = await signer.sendTransaction({ to, data });
+    const receipt = await tx.wait();
+    const hash = receipt!.hash;
+    logger.info(`[ethers] ${label} succeeded`, { hash });
+    return hash;
   }
 
   /**
@@ -152,9 +188,52 @@ export class CreditAgent {
 
       // Sync loan data
       await this.syncLoans();
+
+      // Active portfolio monitoring — emit decision events
+      await this.monitorPortfolio();
     } catch (error) {
       logger.error('Monitor loop error', { error });
       this.status = 'error';
+    }
+  }
+
+  /**
+   * Active portfolio monitoring — generates visible decisions
+   */
+  private async monitorPortfolio(): Promise<void> {
+    const activeLoans = this.getAllActiveLoans();
+    const profileCount = this.profiles.size;
+
+    // Emit portfolio scan event
+    if (activeLoans.length > 0) {
+      const totalBorrowed = activeLoans.reduce((sum, l) => sum + BigInt(l.principal), 0n);
+      const overdueCount = activeLoans.filter(l => l.dueDate * 1000 < Date.now()).length;
+
+      EventBus.emitEvent('credit:portfolio_scan', 'credit', {
+        action: 'portfolio_scan',
+        reasoning: `Monitoring ${activeLoans.length} active loan(s) — ` +
+          `total exposure: ${ethers.formatUnits(totalBorrowed, 6)} USDt. ` +
+          (overdueCount > 0
+            ? `⚠ ${overdueCount} loan(s) overdue — escalating for collection.`
+            : `All loans current — portfolio health: good.`),
+        data: { activeLoans: activeLoans.length, totalBorrowed: ethers.formatUnits(totalBorrowed, 6), overdueCount },
+        status: 'executed',
+      });
+    } else {
+      // Vary the idle monitoring messages
+      const cycleVar = Math.floor(Date.now() / 30000) % 4;
+      const idleMessages = [
+        `Credit pool idle — ${profileCount} profile(s) on file. Ready for new borrower evaluations.`,
+        `Scanning on-chain activity for potential borrowers. No pending applications detected.`,
+        `Credit utilization: 0%. Treasury funds fully available for lending operations.`,
+        `Risk exposure review complete — no active loans, default probability: 0%.`,
+      ];
+      EventBus.emitEvent('credit:monitoring', 'credit', {
+        action: 'credit_monitoring',
+        reasoning: idleMessages[cycleVar],
+        data: { profiles: profileCount, activeLoans: 0 },
+        status: 'executed',
+      });
     }
   }
 
@@ -331,8 +410,7 @@ Credit Tiers:
 ${memoryContext ? `Recent Decisions:\n${memoryContext}\n` : ''}
 Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
 
-      const response = await this.openai.chat.completions.create({
-        model: this.config.llmModel,
+      const response = await this.llm.chat({
         messages: [
           { role: 'system', content: CREDIT_SYSTEM_PROMPT },
           { role: 'user', content: prompt },
@@ -374,7 +452,7 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
   }
 
   /**
-   * Update on-chain credit profile via WDK
+   * Update on-chain credit profile via WDK (fallback: ethers signer)
    */
   async updateOnChainProfile(
     address: string,
@@ -382,8 +460,7 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
     _profile: CreditProfile
   ): Promise<void> {
     try {
-      const iface = new ethers.Interface(CREDIT_LINE_ABI);
-      const data = iface.encodeFunctionData('updateProfile', [
+      const data = CREDIT_LINE_IFACE.encodeFunctionData('updateProfile', [
         address,
         history.transactionCount,
         history.volumeUSD,
@@ -392,15 +469,10 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         history.defaults,
       ]);
 
-      const { hash } = await this.wdkAccount.sendTransaction({
-        to: this.config.creditLineAddress,
-        value: '0',
-        data,
-      });
-
+      const hash = await this.sendWriteTx(this.config.creditLineAddress, data, 'updateProfile');
       logger.info(`On-chain profile updated for ${address}`, { hash });
     } catch (error) {
-      logger.error(`Failed to update on-chain profile for ${address}`, { error });
+      logger.error(`Failed to update on-chain profile for ${address}`, { error: error instanceof Error ? error.message : String(error) });
       // Don't throw — profile evaluation can still succeed without on-chain write
     }
   }
@@ -414,8 +486,17 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         amount: amount.toString(),
       });
 
+      // Mutex: prevent concurrent borrows for same address
+      const addrLower = address.toLowerCase();
+      if (this.borrowLocks.has(addrLower)) {
+        logger.warn(`Borrow already in progress for ${address}`);
+        return null;
+      }
+      this.borrowLocks.add(addrLower);
+
+      try {
       // Get or evaluate credit profile
-      let profile = this.profiles.get(address.toLowerCase());
+      let profile = this.profiles.get(addrLower);
       
       if (!profile) {
         profile = await this.evaluateCredit(address);
@@ -433,40 +514,46 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         return null;
       }
 
-      // Use LLM to evaluate borrow request
-      const shouldApprove = await this.evaluateBorrowRequest(address, amount, profile);
+      // Use LLM to evaluate borrow request and negotiate terms
+      const evaluation = await this.evaluateBorrowRequest(address, amount, profile);
 
-      if (!shouldApprove) {
-        logger.info(`Borrow request declined by agent`, { address });
+      if (!evaluation.approved) {
+        logger.info(`Borrow request declined by agent`, { address, reasoning: evaluation.reasoning });
         return null;
       }
 
-      // Execute on-chain borrow via WDK
-      const iface = new ethers.Interface(CREDIT_LINE_ABI);
-      const callData = iface.encodeFunctionData('borrow', [amount]);
-
+      // Execute on-chain borrow via WDK (fallback: ethers signer)
       let txHash: string | undefined;
+      let onChainLoanId: number | undefined;
       try {
-        const result = await this.wdkAccount.sendTransaction({
-          to: this.config.creditLineAddress,
-          value: '0',
-          data: callData,
-        });
-        txHash = result.hash;
+        const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowFor', [address, amount]);
+        txHash = await this.sendWriteTx(this.config.creditLineAddress, data, `borrowFor(${address})`);
+        // Read loanCount to get the new loan ID
+        const loanCount = await this.creditContract.loanCount();
+        onChainLoanId = Number(loanCount) - 1;
+        logger.info('On-chain borrow succeeded', { txHash, onChainLoanId });
       } catch (err) {
-        logger.error('On-chain borrow tx failed', { err });
-        // Don't block — loan can still be tracked off-chain for demo
+        logger.error('On-chain borrow tx failed', { err: err instanceof Error ? err.message : String(err) });
       }
 
-      // Build Loan object
+      // Read actual dueDate from chain (contract hardcodes 30 days, may differ from LLM terms)
       const now = Math.floor(Date.now() / 1000);
-      const dueDate = now + 30 * 86400; // 30 days
-      const loanId = this.loans.size;
+      let dueDate = now + evaluation.durationDays * 86400; // fallback: LLM-negotiated
+      if (onChainLoanId !== undefined) {
+        try {
+          const onChainLoan = await this.creditContract.loans(onChainLoanId);
+          dueDate = Number(onChainLoan.dueDate);
+          logger.info('Synced dueDate from chain', { onChainLoanId, dueDate, llmDueDate: now + evaluation.durationDays * 86400 });
+        } catch (err) {
+          logger.warn('Failed to read on-chain dueDate, using LLM-negotiated', { err: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      const loanId = onChainLoanId ?? this.loans.size;
       const loan: Loan = {
         id: loanId,
         borrower: address,
         principal: amount.toString(),
-        interestRate: profile.rate,
+        interestRate: evaluation.rateBps,
         borrowedAt: now,
         dueDate,
         repaid: '0',
@@ -486,8 +573,8 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         agentType: 'credit',
         timestamp: Date.now(),
         action: 'approve_borrow',
-        reasoning: `Approved borrow of ${ethers.formatUnits(amount, 6)} USDt based on credit score ${profile.score}`,
-        data: { address, amount: amount.toString(), score: profile.score, loanId },
+        reasoning: `${evaluation.reasoning} | Term: ${evaluation.durationDays}d at ${evaluation.rateBps / 100}%`,
+        data: { address, amount: amount.toString(), score: profile.score, loanId, durationDays: evaluation.durationDays, rateBps: evaluation.rateBps },
         txHash,
         status: 'executed',
       };
@@ -504,20 +591,41 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
       logger.info(`Borrow approved for ${address}`, { amount: amount.toString(), loanId });
 
       return loan;
+      } finally {
+        this.borrowLocks.delete(addrLower);
+      }
     } catch (error) {
+      this.borrowLocks.delete(address.toLowerCase());
       logger.error(`Borrow processing failed for ${address}`, { error });
       return null;
     }
   }
 
   /**
-   * Evaluate borrow request with LLM
+   * Evaluate borrow request with LLM — negotiates loan terms (duration, rate)
    */
   async evaluateBorrowRequest(
     address: string,
     amount: bigint,
     profile: CreditProfile
-  ): Promise<boolean> {
+  ): Promise<{ approved: boolean; durationDays: number; rateBps: number; reasoning: string; mlPrediction?: DefaultPrediction }> {
+    const defaultDuration = 30;
+    const defaultRate = profile.rate;
+
+    // ML default prediction
+    const history = await this.fetchCreditHistory(address);
+    const mlPrediction = predictDefault(history, profile);
+
+    // Hard-decline if ML predicts critical default risk
+    if (mlPrediction.riskBucket === 'critical') {
+      const reasoning = `[ML-BLOCKED] Default probability ${(mlPrediction.probability * 100).toFixed(1)}% (${mlPrediction.riskBucket}) — exceeds risk tolerance`;
+      this.remember('borrow_declined_ml', reasoning);
+      EventBus.emitEvent('credit:ml_block', 'credit', {
+        address, amount: amount.toString(), probability: mlPrediction.probability, riskBucket: mlPrediction.riskBucket,
+      });
+      return { approved: false, durationDays: 0, rateBps: 0, reasoning, mlPrediction };
+    }
+
     try {
       const utilizationPct = BigInt(profile.limit) > 0n
         ? Number((BigInt(profile.borrowed) * 100n) / BigInt(profile.limit))
@@ -527,7 +635,7 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         .map(m => `[${new Date(m.timestamp).toISOString()}] ${m.action}: ${m.reasoning}`)
         .join('\n');
 
-      const prompt = `Evaluate this borrow request.
+      const prompt = `Evaluate this borrow request and negotiate loan terms.
 
 Borrower: ${address}
 Requested: ${ethers.formatUnits(amount, 6)} USDt
@@ -535,71 +643,130 @@ Credit Score: ${profile.score}/1000
 Limit: ${ethers.formatUnits(profile.limit, 6)} USDt
 Already Borrowed: ${ethers.formatUnits(profile.borrowed, 6)} USDt (${utilizationPct}% utilization)
 Available: ${ethers.formatUnits(profile.available, 6)} USDt
-Interest Rate: ${profile.rate / 100}%
+Default Interest Rate: ${profile.rate / 100}%
+
+ML Default Prediction:
+- Probability of default: ${(mlPrediction.probability * 100).toFixed(1)}%
+- Risk bucket: ${mlPrediction.riskBucket}
+- Confidence: ${(mlPrediction.confidence * 100).toFixed(0)}%
+- Top risk factor: ${mlPrediction.featureImportance[0]?.feature ?? 'N/A'} (contribution: ${mlPrediction.featureImportance[0]?.contribution ?? 0})
+
+Term Negotiation Rules:
+- Excellent borrowers (score 800+): offer 7-60 day terms, consider rate discounts up to 2%
+- Good borrowers (score 600-799): offer 14-45 day terms, rate ±1%
+- Poor borrowers (score <600): shorter terms 7-21 days, rate premium up to +3%
+- High utilization (>70%) = shorter terms and rate premium
+- Low amounts relative to limit = more flexibility
+- If ML default probability > 35%, add rate premium and shorten terms
 
 ${memoryContext ? `Recent Decisions:\n${memoryContext}\n` : ''}
-Respond in JSON: {"decision": "APPROVE" or "DECLINE", "reasoning": "<1 sentence>"}`;
+Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-60>, "rateBps": <annual rate in basis points>, "reasoning": "<1-2 sentences including term justification>"}`;
 
-      const response = await this.openai.chat.completions.create({
-        model: this.config.llmModel,
+      const response = await this.llm.chat({
         messages: [
           { role: 'system', content: CREDIT_SYSTEM_PROMPT },
           { role: 'user', content: prompt },
         ],
-        temperature: 0.2,
-        max_tokens: 100,
+        temperature: 0.3,
+        max_tokens: 150,
       });
 
       const content = response.choices[0]?.message?.content?.trim() || '';
       const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
 
       const approved = json.decision?.toUpperCase() === 'APPROVE';
+      const durationDays = Math.max(7, Math.min(60, Number(json.durationDays) || defaultDuration));
+      const rateBps = Math.max(100, Math.min(2500, Number(json.rateBps) || defaultRate));
+
+      const reasoning = json.reasoning || `${approved ? 'Approved' : 'Declined'} ${ethers.formatUnits(amount, 6)} USDt — ${durationDays}d at ${rateBps / 100}%`;
       this.remember(
         approved ? 'borrow_approved' : 'borrow_declined',
-        json.reasoning || `${approved ? 'Approved' : 'Declined'} ${ethers.formatUnits(amount, 6)} USDt for ${address}`,
+        reasoning,
       );
-      return approved;
+      return { approved, durationDays, rateBps, reasoning, mlPrediction };
     } catch (error) {
       logger.error('LLM borrow evaluation error', { error });
-      // Deterministic fallback: approve if within available credit
+      // Deterministic fallback: approve if within available credit, negotiate based on score
       const approved = amount <= BigInt(profile.available);
+      let durationDays = defaultDuration;
+      let rateBps = defaultRate;
+      if (profile.score >= 800) {
+        durationDays = 45;
+        rateBps = Math.max(100, defaultRate - 100);
+      } else if (profile.score < 600) {
+        durationDays = 14;
+        rateBps = defaultRate + 200;
+      }
+
+      const reasoning = `[deterministic] ${approved ? 'Approved' : 'Declined'}: ${approved ? 'within' : 'exceeds'} available credit — ${durationDays}d at ${rateBps / 100}%`;
       this.remember(
         approved ? 'borrow_approved' : 'borrow_declined',
-        `[deterministic] ${approved ? 'Approved' : 'Declined'}: amount ${approved ? 'within' : 'exceeds'} available credit`,
+        reasoning,
       );
-      return approved;
+      return { approved, durationDays, rateBps, reasoning, mlPrediction };
     }
   }
 
   /**
-   * Process loan repayment via WDK
+   * Process loan repayment via WDK (fallback: ethers signer)
    */
-  async processRepayment(loanId: number, amount: bigint): Promise<boolean> {
+  async processRepayment(loanId: number, amount: bigint): Promise<{ ok: boolean; error?: string }> {
     try {
       logger.info(`Processing repayment for loan ${loanId}`, {
         amount: amount.toString(),
       });
 
-      const iface = new ethers.Interface(CREDIT_LINE_ABI);
-      const data = iface.encodeFunctionData('repay', [loanId, amount]);
+      // Pre-validation: check local loan exists and is active
+      const localLoanForRepay = this.loans.get(loanId);
+      if (!localLoanForRepay) {
+        return { ok: false, error: `Loan #${loanId} not found` };
+      }
+      if (!localLoanForRepay.active) {
+        return { ok: false, error: `Loan #${loanId} is already closed` };
+      }
+      const borrower = localLoanForRepay.borrower;
 
-      const { hash } = await this.wdkAccount.sendTransaction({
-        to: this.config.creditLineAddress,
-        value: '0',
-        data,
-      });
+      // Pre-validation: check amount doesn't exceed totalDue on-chain
+      try {
+        const onChainDue = await this.creditContract.getAmountDue(loanId);
+        if (amount > BigInt(onChainDue)) {
+          return { ok: false, error: `Amount exceeds total due (${ethers.formatUnits(onChainDue, 6)} USDt)` };
+        }
+      } catch {
+        // If can't read chain, proceed anyway — tx will revert if invalid
+      }
+
+      // Step 1: Approve USDt for CreditLine
+      const approveData = ERC20_IFACE.encodeFunctionData('approve', [this.config.creditLineAddress, amount]);
+      await this.sendWriteTx(this.config.usdtAddress, approveData, `approve USDt for repay #${loanId}`);
+
+      // Step 2: Repay via operator pattern
+      const repayData = CREDIT_LINE_IFACE.encodeFunctionData('repayFor', [borrower, loanId, amount]);
+      const hash = await this.sendWriteTx(this.config.creditLineAddress, repayData, `repayFor loan #${loanId}`);
 
       // Recalculate borrower's credit
       const loan = await this.creditContract.loans(loanId);
-      await this.evaluateCredit(loan.borrower);
 
       // Update local loan state
       const localLoan = this.loans.get(loanId);
+      let fullyRepaid = false;
       if (localLoan) {
         localLoan.repaid = (BigInt(localLoan.repaid) + amount).toString();
         const due = BigInt(localLoan.totalDue) - amount;
         localLoan.totalDue = (due > 0n ? due : 0n).toString();
-        if (due <= 0n) localLoan.active = false;
+        if (due <= 0n) {
+          localLoan.active = false;
+          fullyRepaid = true;
+        }
+      }
+
+      // Update borrower profile: reduce borrowed, increase available
+      const profile = this.profiles.get(borrower.toLowerCase());
+      if (profile && fullyRepaid && localLoan) {
+        const principal = BigInt(localLoan.principal);
+        const borrowed = BigInt(profile.borrowed);
+        profile.borrowed = (borrowed > principal ? borrowed - principal : 0n).toString();
+        profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
       }
 
       const decision: AgentDecision = {
@@ -607,18 +774,29 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "reasoning": "<1 sentence>
         agentType: 'credit',
         timestamp: Date.now(),
         action: 'repay_loan',
-        reasoning: `Repaid ${ethers.formatUnits(amount, 6)} USDt on loan #${loanId}`,
-        data: { loanId, amount: amount.toString(), borrower: loan.borrower },
+        reasoning: `Repaid ${ethers.formatUnits(amount, 6)} USDt on loan #${loanId}${fullyRepaid ? ' — loan fully closed' : ''}`,
+        data: { loanId, amount: amount.toString(), borrower: loan.borrower, fullyRepaid },
         txHash: hash,
         status: 'executed',
       };
       EventBus.emitEvent('credit:loan_repaid', 'credit', decision);
 
-      logger.info(`Repayment processed for loan ${loanId}`, { hash });
-      return true;
+      // Auto re-evaluate credit score after full repayment (improves score)
+      if (fullyRepaid) {
+        this.evaluateCredit(borrower).catch(err =>
+          logger.warn('Post-repay credit re-eval failed', { err: err instanceof Error ? err.message : String(err) })
+        );
+      }
+
+      logger.info(`Repayment processed for loan ${loanId}`, { hash, fullyRepaid });
+      return { ok: true };
     } catch (error) {
-      logger.error(`Repayment failed for loan ${loanId}`, { error });
-      return false;
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error(`Repayment failed for loan ${loanId}`, { error: msg, stack: error instanceof Error ? error.stack : undefined });
+      // Extract revert reason if available
+      const revertMatch = msg.match(/reason="([^"]+)"/);
+      const userMsg = revertMatch ? revertMatch[1] : 'On-chain transaction failed';
+      return { ok: false, error: userMsg };
     }
   }
 
@@ -632,21 +810,41 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "reasoning": "<1 sentence>
       for (const [loanId, loan] of this.loans) {
         if (!loan.active) continue;
 
-        if (now > loan.dueDate) {
-          logger.warn(`Loan ${loanId} is past due, marking as defaulted`);
-          
-          const iface = new ethers.Interface(CREDIT_LINE_ABI);
-          const data = iface.encodeFunctionData('markDefaulted', [loanId]);
-          await this.wdkAccount.sendTransaction({
-            to: this.config.creditLineAddress,
-            value: '0',
-            data,
+        const overdueSec = now - loan.dueDate;
+        if (overdueSec > 0 && overdueSec <= CreditAgent.GRACE_PERIOD_SECONDS) {
+          // Grace period — warn but don't default yet
+          logger.info(`Loan ${loanId} overdue by ${Math.floor(overdueSec / 3600)}h — within 24h grace period`);
+          EventBus.emitEvent('credit:loan_grace_warning', 'credit', {
+            action: 'grace_warning',
+            reasoning: `Loan #${loanId} is ${Math.floor(overdueSec / 3600)}h overdue — grace period expires in ${Math.floor((CreditAgent.GRACE_PERIOD_SECONDS - overdueSec) / 3600)}h`,
+            data: { loanId, borrower: loan.borrower, overdueHours: Math.floor(overdueSec / 3600) },
+            status: 'executed',
           });
+        } else if (overdueSec > CreditAgent.GRACE_PERIOD_SECONDS) {
+          logger.warn(`Loan ${loanId} is past grace period, marking as defaulted`);
+          
+          try {
+            const data = CREDIT_LINE_IFACE.encodeFunctionData('markDefaulted', [loanId]);
+            await this.sendWriteTx(this.config.creditLineAddress, data, `markDefaulted loan #${loanId}`);
+          } catch (err) {
+            logger.error(`Failed to mark loan ${loanId} as defaulted on-chain`, { err: err instanceof Error ? err.message : String(err) });
+          }
+
+          // Fix C2 + H6: deactivate locally and update profile
+          loan.active = false;
+          const profile = this.profiles.get(loan.borrower.toLowerCase());
+          if (profile) {
+            const borrowed = BigInt(profile.borrowed);
+            const principal = BigInt(loan.principal);
+            profile.borrowed = (borrowed > principal ? borrowed - principal : 0n).toString();
+            profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
+          }
           
           EventBus.emitEvent('credit:loan_defaulted', 'credit', {
-            loanId,
-            borrower: loan.borrower,
-            amount: loan.principal,
+            action: 'loan_defaulted',
+            reasoning: `Loan #${loanId} defaulted — borrower ${loan.borrower} failed to repay ${ethers.formatUnits(loan.principal, 6)} USDt within grace period`,
+            data: { loanId, borrower: loan.borrower, amount: loan.principal },
+            status: 'executed',
           });
         }
       }
@@ -768,6 +966,16 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "reasoning": "<1 sentence>
    */
   getAllActiveLoans(): Loan[] {
     return Array.from(this.loans.values()).filter(l => l.active);
+  }
+
+  /**
+   * Get full loan history for a user (active + repaid + defaulted)
+   */
+  getUserLoanHistory(address: string): Loan[] {
+    const addrLower = address.toLowerCase();
+    return Array.from(this.loans.values()).filter(
+      l => l.borrower.toLowerCase() === addrLower
+    );
   }
 
   /**

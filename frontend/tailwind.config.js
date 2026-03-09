@@ -49,6 +49,14 @@ export default {
       animation: {
         'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
         'spin-slow': 'spin 3s linear infinite',
+        'ping-slow': 'ping 2s cubic-bezier(0, 0, 0.2, 1) 1',
+        'pulse-once': 'fadeHighlight 2s ease-out 1',
+      },
+      keyframes: {
+        fadeHighlight: {
+          '0%': { backgroundColor: 'rgba(34,211,238,0.1)' },
+          '100%': { backgroundColor: 'transparent' },
+        },
       },
     },
   },

@@ -21,7 +21,6 @@ export function useWebSocket(url: string): UseWebSocketReturn {
       const ws = new WebSocket(url);
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
         setIsConnected(true);
       };
 
@@ -35,7 +34,6 @@ export function useWebSocket(url: string): UseWebSocketReturn {
       };
 
       ws.onclose = () => {
-        console.log('WebSocket disconnected');
         setIsConnected(false);
         
         // Reconnect after 3 seconds

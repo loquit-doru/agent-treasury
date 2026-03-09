@@ -13,6 +13,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { LiveLogs } from '../components/LiveLogs';
+import { BonusFeatures } from '../components/BonusFeatures';
 import { useDashboard } from '../hooks/useDashboard';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatAmount, formatPercentage } from '../utils/format';
@@ -38,12 +39,14 @@ import {
   Cell,
 } from 'recharts';
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001/ws';
+import { apiUrl, wsUrl } from '../utils/api';
+
+const WS_URL = wsUrl();
 
 // API helpers for Quick Actions
 const syncTreasury = async () => {
   try {
-    const res = await fetch('/api/treasury/sync', { method: 'POST' });
+    const res = await fetch(apiUrl('/api/treasury/sync'), { method: 'POST' });
     if (!res.ok) throw new Error('Failed to sync treasury');
   } catch (err) {
     console.error(err);
@@ -52,7 +55,7 @@ const syncTreasury = async () => {
 
 const pauseAgents = async () => {
   try {
-    const res = await fetch('/api/emergency/pause', { method: 'POST' });
+    const res = await fetch(apiUrl('/api/emergency/pause'), { method: 'POST' });
     if (!res.ok) throw new Error('Failed to pause agents');
   } catch (err) {
     console.error(err);
@@ -72,17 +75,27 @@ export default function Dashboard() {
   // Historical balance data for the chart (last 24 updates)
   const [balanceHistory, setBalanceHistory] = useState<{ time: string, balance: number }[]>([]);
 
+  // Live "seconds ago" counter
+  const [lastFetch, setLastFetch] = useState<number>(Date.now());
+  const [secondsAgo, setSecondsAgo] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setSecondsAgo(Math.floor((Date.now() - lastFetch) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [lastFetch]);
+
   // Normalize raw EventBus events ({ type, source, payload }) into AgentDecision shape
   const normalizeDecision = (raw: Record<string, unknown>): AgentDecision => {
     if (raw.action && raw.agentType) return raw as unknown as AgentDecision;
+    // payload may contain { action, reasoning, data, status } from enhanced events
+    const payload = (raw.payload || {}) as Record<string, unknown>;
     return {
       id: (raw.id as string) || `${raw.type || 'event'}-${raw.timestamp || Date.now()}`,
       agentType: (raw.agentType || raw.source || 'treasury') as AgentDecision['agentType'],
-      action: (raw.action || raw.type || 'unknown') as string,
-      reasoning: (raw.reasoning || '') as string,
-      data: (raw.data || raw.payload || {}) as Record<string, unknown>,
-      txHash: raw.txHash as string | undefined,
-      status: (raw.status || 'executed') as AgentDecision['status'],
+      action: (payload.action || raw.action || raw.type || 'unknown') as string,
+      reasoning: (payload.reasoning || raw.reasoning || '') as string,
+      data: (payload.data || raw.data || raw.payload || {}) as Record<string, unknown>,
+      txHash: (payload.txHash || raw.txHash) as string | undefined,
+      status: (payload.status || raw.status || 'executed') as AgentDecision['status'],
       timestamp: (raw.timestamp || Date.now()) as number,
     };
   };
@@ -92,6 +105,7 @@ export default function Dashboard() {
     if (data) {
       const normalized = (data.agentDecisions || []).map((d: AgentDecision) => normalizeDecision(d as unknown as Record<string, unknown>));
       setDecisions(normalized);
+      setLastFetch(Date.now());
       setAgentStatus({
         treasury: data.agentStatus?.treasury || 'idle',
         credit: data.agentStatus?.credit || 'idle',
@@ -173,7 +187,11 @@ export default function Dashboard() {
             <div className="flex items-center gap-3">
                <p className="text-sm text-gray-400">AgentTreasury real-time overview and health</p>
                <div className="h-4 w-px bg-gray-800" />
-               <AgentStatus status={agentStatus} wsConnected={isConnected} />
+               <AgentStatus status={agentStatus} wsConnected={isConnected || !!data} />
+               <div className="h-4 w-px bg-gray-800" />
+               <span className="text-[11px] text-gray-500 font-mono tabular-nums">
+                 updated {secondsAgo}s ago
+               </span>
             </div>
          </div>
          {/* Quick Actions Panel */}
@@ -424,42 +442,50 @@ export default function Dashboard() {
         <div className="lg:col-span-1 space-y-6">
            {/* Activity Timeline Overlaying LiveLogs conceptually, keeping the LiveLogs component untouched but presenting a clean timeline */}
            <Panel title="Agent Activity Timeline" icon={<Zap className="w-4 h-4 text-yellow-500" />}>
-              <div className="relative pl-4 border-l border-gray-800 ml-3 space-y-6 py-2 h-[450px] overflow-y-auto pr-2 custom-scrollbar">
+              <div className="relative pl-6 border-l border-gray-800/50 ml-4 space-y-6 py-2 h-[450px] overflow-y-auto overflow-x-hidden pr-2 custom-scrollbar">
                 {decisions.length === 0 ? (
                    <EmptyState text="Waiting for agent actions..." />
                 ) : (
-                  decisions.slice(-10).reverse().map((decision, i) => (
-                    <div key={decision.id || i} className="relative">
+                  decisions.slice(0, 20).map((decision, i) => (
+                    <div key={decision.id || i} className={`relative transition-all duration-700 overflow-hidden ${i === 0 ? 'animate-pulse-once' : ''}`}>
                       {/* Timeline dot */}
-                      <span className={`absolute -left-[21px] top-1 flex h-2.5 w-2.5 rounded-full ring-4 ring-gray-950 ${
+                      <span className={`absolute -left-[30px] top-1.5 flex h-3 w-3 rounded-full ring-4 ring-gray-900 ${
                          decision.agentType === 'treasury' ? 'bg-cyan-500' : 'bg-emerald-500'
-                      }`} />
-                      <div className="flex flex-col gap-1">
-                        <div className="flex items-center justify-between">
-                           <span className={`text-xs font-semibold uppercase tracking-wider ${
+                      } ${i === 0 ? 'animate-ping-slow' : ''}`} />
+                      
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2 mb-0.5">
+                           <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-gray-900/50 border border-gray-800/50 ${
                              decision.agentType === 'treasury' ? 'text-cyan-400' : 'text-emerald-400'
                            }`}>
                              {decision.agentType}
                            </span>
-                           <span className="text-[10px] text-gray-500">
-                             {new Date(decision.timestamp).toLocaleTimeString()}
+                           <span className="text-[10px] text-gray-500 font-mono">
+                             {new Date(decision.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                            </span>
                         </div>
-                        <p className="text-sm font-medium text-gray-200">
+                        
+                        <h4 className="text-sm font-bold text-white/90 capitalize leading-tight">
                            {(decision.action || 'Unknown Action').replace(/_/g, ' ')}
-                        </p>
-                        <p className="text-xs text-gray-400 leading-relaxed mt-1">
+                        </h4>
+                        
+                        <p className="text-[12px] text-gray-400 leading-relaxed mt-0.5 break-words overflow-hidden line-clamp-3">
                           {decision.reasoning}
                         </p>
-                        {decision.status === 'failed' && (
-                           <div className="mt-2 text-xs text-red-400 flex items-center gap-1">
-                              <XCircle className="w-3 h-3" /> Failed
-                           </div>
-                        )}
-                        {decision.status === 'executed' && decision.txHash && (
-                           <div className="mt-2 text-xs text-gray-500 font-mono">
-                              Tx: {decision.txHash.slice(0,8)}...
-                           </div>
+                        
+                        {(decision.status === 'failed' || decision.txHash) && (
+                          <div className="mt-2 flex items-center gap-3">
+                            {decision.status === 'failed' && (
+                               <div className="text-[10px] text-red-400 flex items-center gap-1 font-medium bg-red-400/10 px-1.5 py-0.5 rounded border border-red-400/20">
+                                  <XCircle className="w-3 h-3 shrink-0" /> Failed
+                               </div>
+                            )}
+                            {decision.txHash && (
+                               <div className="text-[10px] text-gray-500 font-mono bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800/50 truncate max-w-[150px]">
+                                  Tx: {decision.txHash.slice(0,6)}...{decision.txHash.slice(-4)}
+                               </div>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -472,6 +498,9 @@ export default function Dashboard() {
 
         </div>
       </div>
+
+      {/* ── Bonus Features Section ── */}
+      <BonusFeatures />
 
       {/* Loading overlay */}
       {isLoading && !data && (

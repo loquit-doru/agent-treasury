@@ -189,12 +189,12 @@ contract CreditLine is ReentrancyGuard, AccessControl {
         score += repaidLoans * 100;
         score += _min(accountAge / 10, 50);
         
-        // Negative factors
-        score -= defaults * 200;
+        // Negative factors (saturating subtract to prevent uint underflow)
+        uint256 penalty = defaults * 200;
+        score = penalty >= score ? 0 : score - penalty;
         
-        // Clamp to 0-1000
+        // Clamp to 1000 max
         if (score > 1000) score = 1000;
-        if (score < 0) score = 0;
         
         return score;
     }
@@ -255,6 +255,40 @@ contract CreditLine is ReentrancyGuard, AccessControl {
         // Note: Actual transfer happens through TreasuryVault.proposeWithdrawal
         // This contract only tracks the loan, Treasury handles disbursement
     }
+
+    /**
+     * @dev Borrow on behalf of a user (agent/relayer pattern)
+     * Only callable by AGENT_ROLE — the backend acts as operator.
+     */
+    function borrowFor(address borrower, uint256 amount) external onlyAgent nonReentrant {
+        require(borrower != address(0), "CreditLine: invalid borrower");
+        CreditProfile storage profile = profiles[borrower];
+        require(profile.exists, "CreditLine: no credit profile");
+        require(amount > 0, "CreditLine: amount must be > 0");
+
+        uint256 availableCredit = profile.limit - profile.borrowed;
+        require(amount <= availableCredit, "CreditLine: exceeds credit limit");
+
+        uint256 loanId = loanCount++;
+        uint256 interestRate = profile.rate;
+        uint256 dueDate = block.timestamp + 30 days;
+
+        loans[loanId] = Loan({
+            borrower: borrower,
+            principal: amount,
+            interestRate: interestRate,
+            borrowedAt: block.timestamp,
+            dueDate: dueDate,
+            repaid: 0,
+            active: true
+        });
+
+        borrowerLoans[borrower].push(loanId);
+        profile.borrowed += amount;
+        totalLent += amount;
+
+        emit LoanCreated(loanId, borrower, amount, interestRate, dueDate);
+    }
     
     /**
      * @dev Repay a loan
@@ -285,6 +319,39 @@ contract CreditLine is ReentrancyGuard, AccessControl {
         emit LoanRepaid(loanId, msg.sender, amount, interest);
         
         // Close loan if fully repaid
+        if (loan.repaid >= loan.principal + interest) {
+            loan.active = false;
+            profile.repaidLoans++;
+            profile.borrowed -= loan.principal;
+        }
+    }
+
+    /**
+     * @dev Repay on behalf of a user (agent/relayer pattern)
+     * Agent transfers USDt from its own balance back to treasury.
+     */
+    function repayFor(address borrower, uint256 loanId, uint256 amount) external onlyAgent nonReentrant {
+        Loan storage loan = loans[loanId];
+        require(loan.active, "CreditLine: loan not active");
+        require(loan.borrower == borrower, "CreditLine: borrower mismatch");
+        require(amount > 0, "CreditLine: amount must be > 0");
+
+        uint256 interest = calculateInterest(loanId);
+        uint256 totalDue = loan.principal + interest - loan.repaid;
+        require(amount <= totalDue, "CreditLine: overpayment");
+
+        // Agent pays from its own balance on behalf of borrower
+        bool success = usdt.transferFrom(msg.sender, treasuryVault, amount);
+        require(success, "CreditLine: transfer failed");
+
+        loan.repaid += amount;
+
+        CreditProfile storage profile = profiles[borrower];
+        profile.repaid += amount;
+        totalRepaid += amount;
+
+        emit LoanRepaid(loanId, borrower, amount, interest);
+
         if (loan.repaid >= loan.principal + interest) {
             loan.active = false;
             profile.repaidLoans++;

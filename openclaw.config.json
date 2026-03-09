@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openclaw.dev/schema/config.json",
+  "agent": {
+    "model": "groq/llama-3.3-70b-versatile",
+    "workspace": "./agents"
+  },
+  "mcpServers": {
+    "agent-treasury": {
+      "command": "node",
+      "args": ["backend/dist/mcp-server.js"],
+      "env": {
+        "BACKEND_URL": "http://localhost:3001"
+      }
+    },
+    "wdk-mcp": {
+      "command": "bun",
+      "args": ["run", "start"],
+      "cwd": "wdk-mcp",
+      "env": {}
+    }
+  }
+}

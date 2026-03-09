@@ -57,8 +57,11 @@ export function LiveLogs({ decisions = [] }: LiveLogsProps) {
   const getActionColor = (action: string | undefined) => {
     if (!action) return 'text-gray-400';
     if (action.includes('yield') || action.includes('invest')) return 'text-green-400';
-    if (action.includes('borrow') || action.includes('credit')) return 'text-blue-400';
+    if (action.includes('borrow') || action.includes('credit') || action.includes('portfolio')) return 'text-blue-400';
+    if (action.includes('risk')) return 'text-orange-400';
+    if (action.includes('sync') || action.includes('state')) return 'text-cyan-400';
     if (action.includes('withdraw')) return 'text-yellow-400';
+    if (action.includes('monitor')) return 'text-purple-400';
     return 'text-gray-400';
   };
 
