@@ -1,0 +1,71 @@
+AgentTreasury CORE — Voiceover Script (v6)
+===========================================
+
+[HOOK — 0:00–0:12]
+
+A hundred and fifty thousand USDt in a DAO vault. No CFO. No multisig committee.
+Two AI agents manage everything — lending, yield, risk scoring.
+Let me show you how it works.
+
+
+[LOAN FLOW — 0:12–0:40]
+
+A borrower connects and requests USDt.
+The Credit Agent evaluates: 7 on-chain factors, ML default prediction, LLM reasoning.
+Score: 750. Risk: 1.4%. Approved.
+
+Loan disbursed on-chain. Interest rate set. 30-day terms.
+The entire flow — autonomous.
+
+
+[TREASURY + YIELD — 0:40–0:55]
+
+Meanwhile, the Treasury Agent manages idle capital.
+It found Aave at 4.2% — invested automatically.
+When yield comes in, it auto-repays inter-agent debt. Oldest first.
+
+
+[BOARD MEETING — 0:55–1:20]
+
+These agents don't just execute. They debate.
+
+Treasury proposes a yield allocation. Credit pushes back — it needs liquidity for upcoming loans.
+They negotiate. They reach consensus.
+
+This is a real Board Meeting — LLM-to-LLM dialogue. Not scripted.
+Every meeting produces different arguments.
+
+
+[ML + ZK + HEALTH — 1:20–1:40]
+
+Health Score: 96 out of 100. Excellent. Six weighted factors.
+
+ML model predicts loan defaults with 7 features — calibrated against real DeFi liquidation data.
+ZK-inspired proofs let borrowers prove their credit tier
+without revealing the exact score. Privacy by design.
+
+
+[WDK + ON-CHAIN — 1:40–1:55]
+
+Under the hood — Tether's WDK handles wallets and signing.
+And this is live on Sepolia.
+
+TreasuryVault — real contract. CreditLine — real transactions.
+Every loan, every repayment — on-chain and verifiable.
+
+
+[TECH + REPO — 1:55–2:10]
+
+React + Tailwind + WebSocket dashboard. Express + TypeScript backend.
+Solidity + Foundry contracts. Groq LLM with OpenRouter Gemini failover — always on, zero cost.
+Open source. 11 out of 11 requirements. All bonus tracks covered.
+
+
+[CTA — 2:10–2:25]
+
+AgentTreasury CORE.
+
+Autonomous lending. Yield optimization. Inter-agent governance.
+ML risk scoring. ZK credit proofs.
+
+Two AI agents. One treasury. Full autonomy with on-chain safety.

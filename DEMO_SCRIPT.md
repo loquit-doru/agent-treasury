@@ -1,136 +1,118 @@
-# AgentTreasury CORE — Demo Video Script (v3 FINAL)
+# AgentTreasury CORE — Demo Video Script (v6)
 ## Tether Hackathon Galáctica: WDK Edition 1 | Lending Bot Track
 
-> **Target: 2:30–2:50.** Everything visual on dashboard. No curl. No JSON.
-> Consensus: 3× AI reviewers + recording best practices applied.
+> **Target: 2:00–2:30.** Everything visual on dashboard.
+> No curl. No JSON. Show the system working, not the code.
 
 ---
 
-### 🎬 HOOK (0:00 – 0:10)
+### 🎬 HOOK (0:00 – 0:12)
 
-**[Screen: Dashboard — full view, agents already running, 3-4 events in timeline]**
+**[Screen: Dashboard — full view, agents running, 4-5 events in timeline, Health Score visible]**
 
-> *"Fifty thousand USDt in a DAO vault. No CFO. No multisig committee.*
-> *Two AI agents manage everything — lending, yield, risk — fully autonomous.*
-> *Let me show you."*
+> *"A hundred and fifty thousand USDt in a DAO vault. No CFO. No multisig committee.*
+> *Two AI agents manage everything — lending, yield, risk scoring.*
+> *Let me show you how it works."*
 >
-> *(Dashboard visible immediately — KPIs, health score, timeline with pre-existing events)*
+> *(Dashboard already live — KPIs, health score 96/100, timeline with pre-existing events)*
 
 ---
 
-### 💸 LOAN FLOW — END TO END (0:10 – 0:30)
+### 💸 LOAN FLOW (0:12 – 0:40)
 
-**[Screen: Dashboard — trigger loan in background, watch timeline update LIVE]**
+**[Screen: Dashboard — trigger a loan, watch timeline update LIVE]**
 
-> A borrower connects and requests 1,000 USDt.
-> The Credit Agent evaluates — 7 on-chain factors, ML default prediction, LLM reasoning.
+> A borrower connects and requests USDt.
+> The Credit Agent evaluates: 7 on-chain factors, ML default prediction, LLM reasoning.
 > Score: 750. Risk: 1.4%. Approved.
 >
 > Loan disbursed on-chain. Interest rate set. 30-day terms.
-> **Zero clicks. Fully autonomous.**
+> The entire flow — autonomous.
 >
 > *(Point to Activity Timeline — each step appears live with reasoning text)*
 
 ---
 
-### 💰 TREASURY AGENT (0:30 – 0:40)
+### 💰 TREASURY + YIELD (0:40 – 0:55)
 
 **[Screen: Dashboard — KPIs + yield positions]**
 
-> The Treasury Agent manages the vault. It found Aave at 4.2% and Compound at 3.8% —
-> invested idle capital automatically.
+> Meanwhile, the Treasury Agent manages idle capital.
+> It found Aave at 4.2% — invested automatically.
 > When yield comes in, it auto-repays inter-agent debt. Oldest first.
 >
 > *(Point to yield positions panel + KPI cards — briefly)*
 
 ---
 
-### 🤝 BOARD MEETING (0:40 – 1:05)
+### 🤝 BOARD MEETING (0:55 – 1:20)
 
 **[Screen: Dashboard — trigger board meeting, watch agents debate in timeline]**
 
-> Now — these agents hold Board Meetings. Real LLM-to-LLM dialogue.
+> These agents don't just execute. They **debate**.
 >
-> Treasury proposes a yield allocation. Credit pushes back — needs liquidity for loans.
-> They negotiate. They adapt.
+> Treasury proposes a yield allocation. Credit pushes back — it needs liquidity for upcoming loans.
+> They negotiate. They reach consensus.
 >
-> Not scripted. Every meeting produces different arguments.
+> This is a real Board Meeting — LLM-to-LLM dialogue. Not scripted.
+> Every meeting produces different arguments.
 >
-> *(Let timeline fill with board meeting events — ~15-20s of live agent dialogue)*
+> *(Let timeline fill with board meeting events — ~15s of live agent dialogue)*
 
 ---
 
-### 🔥 STRESS TEST — LIVE (1:05 – 1:20)
+### 🛡️ ML + ZK + HEALTH (1:20 – 1:40)
 
-**[Screen: Dashboard — click "Stress Test" button]**
+**[Screen: Dashboard — Health Score + BonusFeatures cards]**
 
-> What if the market crashes 40%?
+> Health Score: 96 out of 100. Excellent. Six weighted factors.
 >
-> *(Click the Stress Test button — slow, intentional mouse movement)*
->
-> System simulates vault losses. Agents react.
-> Health Score: still green. System survives.
->
-> *(Point to Health Score gauge + stress test result panel)*
-
----
-
-### 🛡️ TREASURY HEALTH + ML + ZK (1:20 – 1:35)
-
-**[Screen: Dashboard — Health Score + scroll to BonusFeatures]**
-
-> Health Score: 85 out of 100. Six weighted factors — liquidity, utilization, yield, debt.
->
-> ML model uses 7 features calibrated against Aave/Compound liquidation data.
-> ZK-inspired proofs let borrowers prove their tier without revealing the exact score.
+> ML model predicts loan defaults with 7 features — calibrated against real DeFi liquidation data.
+> ZK-inspired proofs let borrowers prove their credit tier
+> without revealing the exact score. Privacy by design.
 >
 > *(Quick scroll through BonusFeatures cards)*
 
 ---
 
-### 🔧 WDK (1:35 – 1:45)
+### 🔧 WDK + ON-CHAIN (1:40 – 1:55)
 
-**[Screen: Dashboard — verbal mention + optional code screenshot flash]**
+**[Screen: Etherscan Sepolia tabs — pre-opened]**
 
-> Under the hood — Tether's WDK handles wallet operations.
-> `wdk-wallet-evm` for wallet management, `wdk-protocol-lending-aave-evm` for DeFi.
-> WDK is the primary path. Ethers.js is the fallback.
-
----
-
-### ⛓️ ON-CHAIN PROOF (1:45 – 2:00)
-
-**[Screen: Etherscan Sepolia — pre-opened tabs]**
-
+> Under the hood — Tether's WDK handles wallets and signing.
 > And this is live on Sepolia.
+>
 > TreasuryVault — real contract. CreditLine — real transactions.
+> Every loan, every repayment — on-chain and verifiable.
 >
-> *(Switch to pre-opened Etherscan tabs — 3 seconds each, show recent txs)*
+> *(Switch between pre-opened Etherscan tabs — 3 seconds each)*
 
 ---
 
-### 🏗️ TECH + REPO (2:00 – 2:15)
+### 🏗️ TECH + REPO (1:55 – 2:10)
 
-**[Screen: GitHub repo]**
+**[Screen: GitHub repo — brief scroll]**
 
-> React + Tailwind + WebSocket dashboard.
-> Express + TypeScript backend. Solidity + Foundry contracts.
-> Groq LLM. Open source. 11 out of 11 requirements.
+> React + Tailwind + WebSocket dashboard. Express + TypeScript backend.
+> Solidity + Foundry contracts. Groq LLM with OpenRouter Gemini failover — 24/7 uptime, zero cost.
+> Open source. 11 out of 11 requirements. All bonus tracks covered.
 >
-> *(Scroll briefly through repo — it's real code, not a mockup)*
+> *(Scroll briefly through repo structure)*
 
 ---
 
-### 🎯 CTA (2:15 – 2:30)
+### 🎯 CTA (2:10 – 2:25)
 
-**[Screen: Dashboard — full view, agents still running]**
+**[Screen: Dashboard full view — agents running]**
 
-> AgentTreasury CORE. Autonomous lending, yield optimization,
-> inter-agent governance.
+> AgentTreasury CORE.
 >
-> Two AI agents. One treasury. Zero human prompts.
+> Autonomous lending. Yield optimization. Inter-agent governance.
+> ML risk scoring. ZK credit proofs.
 >
-> *(Dashboard running live as final shot — hold 3 seconds)*
+> Two AI agents. One treasury. **Full autonomy with on-chain safety.**
+>
+> *(Hold dashboard as final shot — 3 seconds, agents still producing events)*
 
 ---
 
@@ -146,94 +128,47 @@
 | Bitrate | 8–12 Mbps |
 | Voiceover | LIVE (nu TTS) |
 
-**OBS Config:**
-- Output → Recording Format: MP4
-- Output → Video Encoder: x264 (sau NVENC cu GPU)
-- Video → Base & Output Resolution: 1920×1080
-- Video → FPS: 30
-
-**OBS Scenes:**
-1. Dashboard fullscreen
-2. Etherscan tabs
-3. GitHub repo
-
 ### Strategy: Record in Segments
 
-Nu înregistra totul dintr-o bucată. Fă segment per section:
-1. Hook + Loan Flow (0:00–0:30)
-2. Treasury + Board Meeting (0:30–1:05)
-3. Stress Test + Health + ML/ZK (1:05–1:35)
-4. WDK + Etherscan + Repo + CTA (1:35–2:30)
-
-Dacă greșești un segment → re-record doar acel segment.
-Exportă o versiune raw înainte de orice editare.
+1. Hook + Loan Flow (0:00–0:40)
+2. Treasury + Board Meeting (0:40–1:20)
+3. ML/ZK + Health (1:20–1:40)
+4. WDK + Etherscan + Repo + CTA (1:40–2:25)
 
 ### Browser Setup
 
-- [x] Chrome Guest Mode sau profil curat (zero extensii, zero history)
-- [x] Bookmarks bar: HIDDEN (Ctrl+Shift+B)
-- [x] Zoom: **125%** (textul trebuie vizibil pe laptop/telefon)
+- [x] Chrome Guest Mode sau profil curat
+- [x] Bookmarks bar: HIDDEN
+- [x] Zoom: **125%**
 - [x] Dark mode dashboard confirmed
 - [x] DevTools: CLOSED
 - [x] Notifications: Do Not Disturb
 - [x] Max 3 tabs: Dashboard | Etherscan | GitHub
-- [x] Terminal font: 16px+ (dacă apare)
-
-### Voiceover Style
-
-**Ton: technical + conversational.** Nu enterprise, nu marketing, nu excited pitch.
-
-Bun: *"A borrower connects. The Credit Agent evaluates using on-chain data and a default prediction model. Loan approved, on-chain."*
-
-Rău: *"Revolutionary AI-powered next-generation autonomous finance..."*
-
-- Script pe bullet points, nu word-by-word
-- Practice run 2-3× înainte
-- Pauze scurte înainte de "wow moments"
-- Dacă te bâlbâi puțin → pare autentic
-- Mouse-ul se mișcă **LENT și intenționat** (nu haotic)
 
 ### Pre-Record Checklist
 
-**Tehnic:**
 - [ ] OBS scenes configurate și testate
-- [ ] Test recording 30s — verifică audio levels (nu clip, nu încet)
-- [ ] Browser curat, zoom 125%, bookmarks hidden
-- [ ] Dashboard pre-populat: 3-4 events, 1 loan activ, yield positions populate
-- [ ] Stress Test testat (funcționează?)
+- [ ] Test recording 30s — verifică audio levels
+- [ ] Dashboard pre-populat: 4-5 events, 1 loan activ, yield positions
 - [ ] Board Meeting endpoint testat
 - [ ] Etherscan tabs pre-deschise cu contractele
 
-**Conținut:**
-- [ ] Script bullet points printat / pe al doilea monitor
-- [ ] Practice run complet făcut cel puțin o dată
-- [ ] Timing: Loan la 0:10, Board Meeting la 0:40, Stress Test la 1:05
-- [ ] URLs vizibile la final (GitHub, live demo)
-
 **Pre-trigger (30s înainte de record):**
 ```bash
-# Pre-populate timeline with events
 curl -X POST https://treasury.proceedgate.dev/api/treasury/sync
 curl -X POST https://treasury.proceedgate.dev/api/credit/0x742d35Cc6634C0532925a3b844Bc9e7595f2bD28/evaluate
 ```
 
-### Mouse Rules
-
-- Mișcare LENTĂ și intenționată
-- Hover pe elementele pe care vorbești
-- Nu mișca mouse-ul când nu e relevant
-- Indică cu cursorul, nu cu highlight random
-
-## ℹ️ Key Facts (for description / submission form)
+## ℹ️ Key Facts
 
 - **Repo**: github.com/loquit-doru/agent-treasury
 - **Live Dashboard**: agent-treasury.pages.dev
 - **Live API**: treasury.proceedgate.dev
-- **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + React + Tailwind + WebSocket
+- **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + OpenRouter Gemini Flash (failover) + React + Tailwind + WebSocket
 - **Contracts (Sepolia)**:
   - TreasuryVault: `0x4f3afE989B6911Ea5E6a324E834d0b39A0C894Fc`
   - CreditLine: `0x4B386c556F664d8823887a7ea0a8284D498E76b9`
   - MockUSDt: `0xddedeaDa24e18D41f9EbFfD306A2972385dF6A77`
 - **Track**: Lending Bot (11/11 requirements)
 - **Agents**: Treasury Agent (yield, risk, pause) + Credit Agent (scoring, lending, repayment)
-- **Bonuses**: Inter-agent lending, ML default prediction, ZK-inspired credit proofs, yield-based debt servicing, stress testing, treasury health scoring
+- **Bonuses**: Inter-agent lending, ML default prediction, ZK-inspired credit proofs, yield-based debt servicing, treasury health scoring

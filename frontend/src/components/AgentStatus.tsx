@@ -70,6 +70,12 @@ export function AgentStatus({ status, wsConnected }: AgentStatusProps) {
               Credit
             </span>
           </div>
+          <div className={`flex items-center gap-1.5 px-2 py-1 rounded ${getStatusBg(status.risk)}`}>
+            <Activity className={`w-3 h-3 ${getStatusColor(status.risk)}`} />
+            <span className={`text-xs font-medium capitalize ${getStatusColor(status.risk)}`}>
+              Risk
+            </span>
+          </div>
         </div>
       )}
     </div>

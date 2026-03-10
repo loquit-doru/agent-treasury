@@ -3,7 +3,7 @@
  */
 
 // Agent Types
-export type AgentType = 'treasury' | 'credit' | 'yield';
+export type AgentType = 'treasury' | 'credit' | 'risk' | 'yield';
 
 export type AgentStatus = 'idle' | 'active' | 'error' | 'paused';
 
@@ -125,7 +125,7 @@ export interface ApiResponse<T> {
 }
 
 export interface DialogueTurn {
-  speaker: 'treasury' | 'credit' | 'consensus';
+  speaker: 'treasury' | 'credit' | 'risk' | 'consensus';
   message: string;
   timestamp: number;
 }

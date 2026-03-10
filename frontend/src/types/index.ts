@@ -2,12 +2,13 @@
  * Frontend Types - mirrors backend/src/types/index.ts
  */
 
-export type AgentType = 'treasury' | 'credit';
+export type AgentType = 'treasury' | 'credit' | 'risk';
 export type AgentStatus = 'idle' | 'active' | 'error' | 'paused';
 
 export interface AgentStatusData {
   treasury: AgentStatus;
   credit: AgentStatus;
+  risk: AgentStatus;
 }
 
 export interface AgentDecision {

@@ -12,8 +12,23 @@
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
     "contracts:build": "cd contracts && forge build",
     "contracts:test": "cd contracts && forge test -vvv",
-    "contracts:deploy": "cd contracts && forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify"
+    "contracts:deploy": "cd contracts && forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --verify",
+    "demo:video": "node scripts/record-demo.mjs",
+    "demo:voiceover": "node scripts/add-voiceover.mjs"
   },
-  "keywords": ["tether", "hackathon", "wdk", "openclaw", "dao", "treasury", "agents"],
-  "license": "MIT"
+  "keywords": [
+    "tether",
+    "hackathon",
+    "wdk",
+    "openclaw",
+    "dao",
+    "treasury",
+    "agents"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "playwright": "^1.58.2",
+    "say": "^0.16.0"
+  }
 }

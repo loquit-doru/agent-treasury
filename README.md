@@ -15,7 +15,7 @@ AgentTreasury is a **2-agent autonomous financial system** that manages a DAO tr
 | **Treasury Agent** | Yield optimization (Aave via WDK), withdrawal proposals, emergency pause, daily volume caps |
 | **Credit Agent** | On-chain credit scoring (500–1000), 3-tier lending (5%/10%/15% APR), default detection, repayment tracking |
 
-Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, and debate strategy in periodic **Board Meetings** (inter-agent dialogue). Large transactions require **Telegram human-in-the-loop approval**.
+Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, and debate strategy in periodic **Board Meetings** (inter-agent dialogue).
 
 ### Hackathon Track Alignment
 
@@ -37,7 +37,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 
 #### 🤖 Agent Wallets — Nice to Haves ✅
 - ✅ **Clear separation** between agent logic (LLM reasoning) and wallet execution (WDK + Smart Contracts)
-- ✅ **Safety**: permissions (RBAC roles), daily limits, timelock, multi-sig, Telegram approval for large txs, emergency pause
+- ✅ **Safety**: permissions (RBAC roles), daily limits, timelock, multi-sig, emergency pause
 
 #### 🌊 Autonomous DeFi Agent — Must Haves ✅
 - ✅ Agent decides **when and why** (LLM picks strategy, Board Meeting debates allocation)
@@ -56,9 +56,9 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 | **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`) | Self-custodial wallet, Aave lending |
 | **OpenClaw** | Agent identity (SOUL.md), skills, MCP tool definitions |
 | **Foundry** | Smart contract tests (31 tests) & deployment |
-| **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning, with failover support |
+| **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning |  
+| **OpenRouter** (Gemini Flash) | Failover LLM — auto-switches on 429/5xx |
 | **MCP Server** | 15 tools for external agent access (stdio transport) |
-| **Telegram Bot** | Human-in-the-loop approval, commands, real-time alerts |
 | **Ethers.js v6** | Read-only contract interactions |
 
 ## Architecture
@@ -76,7 +76,7 @@ agent-treasury/
 │   ├── CreditLine.sol            # Credit scoring + lending (3 tiers)
 │   ├── MockUSDT.sol              # Test token for local dev
 │   └── script/DeploySepolia.s.sol
-├── backend/                      # Node.js + Express + WS + Telegram
+├── backend/                      # Node.js + Express + WS
 │   └── src/
 │       ├── agents/
 │       │   ├── TreasuryAgent.ts  # Yield optimization, withdrawal proposals
@@ -87,7 +87,6 @@ agent-treasury/
 │       ├── services/
 │       │   ├── wdk.ts            # WDK wallet initialization
 │       │   ├── LLMClient.ts      # Failover LLM wrapper (primary + fallback)
-│       │   ├── TelegramBot.ts    # Commands, alerts, approval flow
 │       │   ├── DefaultPredictor.ts    # ML logistic regression for default prediction
 │       │   ├── InterAgentLending.ts   # Inter-agent capital allocation via EventBus
 │       │   └── ZKCreditProof.ts       # ZK range proofs for credit tier privacy
@@ -124,11 +123,11 @@ agent-treasury/
             │                │                    │
             └────────┬───────┘                    │
                      │  EventBus                  │
-              ┌──────▼──────┐              ┌──────▼──────┐
-              │  Telegram   │              │   Frontend   │
-              │ Approvals   │              │  Dashboard   │
-              │  + Alerts   │              │  WebSocket   │
-              └─────────────┘              └─────────────┘
+              ┌──────▼──────┐
+              │   Frontend   │
+              │  Dashboard   │
+              │  WebSocket   │
+              └─────────────┘
 ```
 
 ## Quick Start
@@ -138,7 +137,6 @@ agent-treasury/
 - Node.js 22+
 - Foundry (forge, anvil)
 - LLM API key: Groq (free) or OpenAI (optional — agents fall back to deterministic logic without it)
-- Telegram bot token + chat ID (optional — for approval flow and alerts)
 
 ### Quick Demo (Local — No testnet needed!)
 
@@ -219,10 +217,6 @@ USDT_ADDRESS=0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0
 AAVE_POOL_ADDRESS=0x6Ae43d3271ff6888e7Fc43Fd7321a503104E31D7
 TREASURY_VAULT_ADDRESS=<deployed>
 CREDIT_LINE_ADDRESS=<deployed>
-
-# Telegram (optional — for approval flow and alerts)
-# TELEGRAM_BOT_TOKEN=123456:ABC...
-# TELEGRAM_CHAT_ID=your_chat_id
 ```
 
 ### 3. Deploy Contracts
@@ -372,33 +366,6 @@ cd frontend && npm run build
 - Daily volume + single-tx caps
 - Emergency pause via GUARDIAN_ROLE
 - OpenClaw SOUL.md constrains agent behavior (safety-first, conservative risk, on-chain verification)
-- **Telegram approval flow** — withdrawals ≥ 1,000 USDt and yield investments ≥ 500 USDt require human confirmation via inline buttons (✅ Approve / ❌ Reject) with 10-minute TTL
-
-## Telegram Bot
-
-The Telegram bot provides real-time control and monitoring of both agents. Opt-in: set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` env vars.
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `/status` | Treasury balance, yield positions, agent health |
-| `/decisions` | Recent agent decisions with reasoning |
-| `/dialogue` | Latest Board Meeting summary |
-| `/loans` | Active loans overview |
-| `/budget` | Budget utilization and limits |
-| `/invest <amount>` | Trigger yield investment |
-| `/pause` / `/unpause` | Emergency pause/resume |
-| `/help` | All commands |
-
-### Human-in-the-Loop Approval
-Large transactions are held for Telegram approval before execution:
-- **Withdrawals ≥ 1,000 USDt** → approval required
-- **Yield investments ≥ 500 USDt** → approval required
-
-Inline buttons (✅ Approve / ❌ Reject) with 10-minute expiry.
-
-### Event Alerts
-The bot auto-notifies on: Board Meeting consensus, borrow requests, large withdrawals, yield analysis results, and agent errors.
 
 ## LLM Failover
 
@@ -413,7 +380,8 @@ Primary (Groq/LLaMA 3.3 70B) ──[429/5xx]──► Fallback (configurable)
 - Primary provider attempts first; on HTTP 429 or 5xx, falls back to secondary
 - 60-second cooldown before retrying primary
 - If no LLM is configured, agents use deterministic algorithmic fallbacks
-- Configure via: `LLM_API_KEY`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_BASE_URL`
+- Configure via: `OPENAI_API_KEY`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_BASE_URL`
+- Production setup: Groq (primary) + OpenRouter Gemini Flash (fallback) — both free, 24/7 uptime
 
 ## Inter-Agent Dialogue (Board Meetings)
 
@@ -425,7 +393,7 @@ Every 45 seconds, both agents participate in an LLM-driven debate on rotating to
 4. **Emergency Preparedness** — Pause triggers, recovery playbook
 5. **Portfolio Health** — Overall position assessment
 
-Each round: 4 LLM turns (2 per agent) → synthesized consensus → broadcast to dashboard + Telegram.
+Each round: 4 LLM turns (2 per agent) → synthesized consensus → broadcast to dashboard via WebSocket.
 
 ## Bonus Features
 
@@ -458,9 +426,6 @@ Separation of concerns: the Treasury Agent optimizes yield without worrying abou
 
 ### Why On-Chain Credit Scoring?
 The credit formula (`500 + min(txCount*2, 200) + min(volume/100, 150) + repaidLoans*100 + min(age/10, 50) - defaults*200`) uses only publicly verifiable on-chain data. No off-chain oracles or trusted third parties. The score determines loan tier, amount cap, and interest rate autonomously.
-
-### Why Telegram Approval for Large Transactions?
-Full autonomy is the goal, but large financial operations need a safety net during early deployment. The threshold model (≥1,000 USDt for withdrawals, ≥500 USDt for yield) gives agents freedom for routine operations while keeping humans in the loop for material decisions. Approvals expire in 10 minutes to prevent stale authorizations.
 
 ### Why WDK + ethers.js Dual Approach?
 WDK handles wallet management and Aave lending (via `wdk-protocol-lending-aave-evm`). ethers.js handles direct smart contract reads and custom transactions (credit scoring, loan issuance). This gives us WDK's self-custodial guarantees for wallet ops and ethers.js flexibility for custom contracts.
