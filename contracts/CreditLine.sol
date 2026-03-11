@@ -217,43 +217,13 @@ contract CreditLine is ReentrancyGuard, AccessControl {
     }
     
     /**
-     * @dev Borrow USDt (creates loan proposal to Treasury)
+     * @dev Borrow USDt — restricted to AGENT_ROLE only.
+     * Fund disbursement must be coordinated off-chain via TreasuryVault.proposeWithdrawal.
+     * Direct borrower calls are disabled to prevent phantom loans (credit consumed, funds never received).
+     * Users should request loans through the backend API which calls borrowFor().
      */
-    function borrow(uint256 amount) external nonReentrant {
-        CreditProfile storage profile = profiles[msg.sender];
-        require(profile.exists, "CreditLine: no credit profile");
-        require(amount > 0, "CreditLine: amount must be > 0");
-        
-        uint256 availableCredit = profile.limit - profile.borrowed;
-        require(amount <= availableCredit, "CreditLine: exceeds credit limit");
-        
-        // Create loan
-        uint256 loanId = loanCount++;
-        uint256 interestRate = profile.rate;
-        uint256 dueDate = block.timestamp + 30 days;
-        
-        loans[loanId] = Loan({
-            borrower: msg.sender,
-            principal: amount,
-            interestRate: interestRate,
-            borrowedAt: block.timestamp,
-            dueDate: dueDate,
-            repaid: 0,
-            active: true
-        });
-        
-        borrowerLoans[msg.sender].push(loanId);
-        
-        // Update profile
-        profile.borrowed += amount;
-        
-        // Update totals
-        totalLent += amount;
-        
-        emit LoanCreated(loanId, msg.sender, amount, interestRate, dueDate);
-        
-        // Note: Actual transfer happens through TreasuryVault.proposeWithdrawal
-        // This contract only tracks the loan, Treasury handles disbursement
+    function borrow(uint256 amount) external onlyAgent nonReentrant {
+        _borrowFor(msg.sender, amount, 0, 0);
     }
 
     /**
@@ -478,12 +448,15 @@ contract CreditLine is ReentrancyGuard, AccessControl {
     ) {
         CreditProfile storage profile = profiles[user];
         
+        uint256 available = profile.borrowed <= profile.limit
+            ? profile.limit - profile.borrowed
+            : 0;
         return (
             profile.score,
             profile.limit,
             profile.rate,
             profile.borrowed,
-            profile.limit - profile.borrowed,
+            available,
             profile.lastUpdated
         );
     }

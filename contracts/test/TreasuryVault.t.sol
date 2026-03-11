@@ -122,16 +122,26 @@ contract TreasuryVaultTest is Test {
         vm.prank(user);
         vault.deposit(50_000e6);
 
-        // Propose 10 txns of 1000e6 = 10000e6 (MAX_DAILY_VOLUME)
-        for (uint256 i = 0; i < 10; i++) {
+        // Volume is tracked at execution time; use amounts below MULTISIG_THRESHOLD (1000e6)
+        bytes32[] memory hashes = new bytes32[](11);
+        for (uint256 i = 0; i < 11; i++) {
             vm.prank(agent);
-            vault.proposeWithdrawal(user, 1000e6);
+            hashes[i] = vault.proposeWithdrawal(user, 999e6);
         }
 
-        // Next proposal should fail
-        vm.prank(agent);
+        // Warp past timelock
+        vm.warp(block.timestamp + 1 hours + 1);
+
+        // Execute 10 txns = 9990e6 (just under MAX_DAILY_VOLUME of 10000e6)
+        for (uint256 i = 0; i < 10; i++) {
+            vm.prank(executor);
+            vault.executeWithdrawal(hashes[i]);
+        }
+
+        // 11th execution pushes over 10000e6 daily limit
+        vm.prank(executor);
         vm.expectRevert("TreasuryVault: exceeds daily volume");
-        vault.proposeWithdrawal(user, 1e6);
+        vault.executeWithdrawal(hashes[10]);
     }
 
     // ── Emergency Pause ───────────────────────────────────
@@ -197,8 +207,17 @@ contract TreasuryVaultTest is Test {
 
         assertEq(vault.getCurrentDayVolume(), 0);
 
+        // Volume is tracked at execution time
         vm.prank(agent);
-        vault.proposeWithdrawal(user, 500e6);
+        bytes32 txHash = vault.proposeWithdrawal(user, 500e6);
+
+        // Still 0 after proposal (volume tracked at execution)
+        assertEq(vault.getCurrentDayVolume(), 0);
+
+        // Warp past timelock and execute
+        vm.warp(block.timestamp + 1 hours + 1);
+        vm.prank(executor);
+        vault.executeWithdrawal(txHash);
 
         assertEq(vault.getCurrentDayVolume(), 500e6);
     }

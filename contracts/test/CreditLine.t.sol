@@ -86,8 +86,9 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(200e6);
+        // Agent borrows on behalf of borrower (borrow() is onlyAgent)
+        vm.prank(agent);
+        credit.borrowFor(borrower, 200e6);
 
         assertEq(credit.loanCount(), 1);
         assertEq(credit.totalLent(), 200e6);
@@ -101,15 +102,15 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
+        vm.prank(agent);
         vm.expectRevert("CreditLine: exceeds credit limit");
-        credit.borrow(501e6);
+        credit.borrowFor(borrower, 501e6);
     }
 
     function test_borrow_no_profile_reverts() public {
-        vm.prank(borrower);
+        vm.prank(agent);
         vm.expectRevert("CreditLine: no credit profile");
-        credit.borrow(100e6);
+        credit.borrowFor(borrower, 100e6);
     }
 
     // ── Repay ─────────────────────────────────────────────
@@ -118,8 +119,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(200e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 200e6);
 
         // Warp 30 days so interest accrues
         vm.warp(block.timestamp + 30 days);
@@ -142,8 +143,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(200e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 200e6);
 
         vm.prank(borrower);
         credit.repay(0, 50e6);
@@ -159,8 +160,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(200e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 200e6);
 
         // Warp past due date (30 days)
         vm.warp(block.timestamp + 31 days);
@@ -182,8 +183,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(200e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 200e6);
 
         vm.prank(agent);
         vm.expectRevert("CreditLine: not yet due");
@@ -196,8 +197,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0); // poor tier → 15% APR, 500 USDt limit
 
-        vm.prank(borrower);
-        credit.borrow(400e6); // borrow within 500e6 limit
+        vm.prank(agent);
+        credit.borrowFor(borrower, 400e6); // borrow within 500e6 limit
 
         // Warp 365 days
         vm.warp(block.timestamp + 365 days);
@@ -213,10 +214,10 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(100e6);
-        vm.prank(borrower);
-        credit.borrow(100e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 100e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 100e6);
 
         uint256[] memory activeLoans = credit.getActiveLoans(borrower);
         assertEq(activeLoans.length, 2);
@@ -251,8 +252,8 @@ contract CreditLineTest is Test {
         vm.prank(agent);
         credit.updateProfile(borrower, 5, 0, 0, 0, 0);
 
-        vm.prank(borrower);
-        credit.borrow(100e6);
+        vm.prank(agent);
+        credit.borrowFor(borrower, 100e6);
 
         vm.warp(block.timestamp + 31 days);
 

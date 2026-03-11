@@ -3,6 +3,7 @@
  * Multi-agent system for DAO treasury management
  */
 
+import { timingSafeEqual } from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -82,8 +83,14 @@ app.use(helmet({
 }));
 app.use(cors({
   origin: function(origin, callback) {
-    // Allow requests with no origin (curl, mobile apps, etc.)
-    if (!origin) return callback(null, true);
+    // Requests with no Origin header are only allowed from localhost (dev tools, curl on same host)
+    // In production, enforce origin to prevent open CORS
+    if (!origin) {
+      if (process.env.NODE_ENV === 'production') {
+        return callback(null, false);
+      }
+      return callback(null, true); // allow in dev only
+    }
     // Allow all *.agent-treasury.pages.dev subdomains + localhost
     if (origin.endsWith('.agent-treasury.pages.dev') ||
         origin === 'https://agent-treasury.pages.dev' ||
@@ -95,6 +102,26 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+
+// API key middleware for mutation endpoints
+// Set API_SECRET env var to enable; if not set, auth is skipped (dev mode only)
+function requireApiKey(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  const secret = process.env.API_SECRET;
+  if (!secret) {
+    // No secret configured: allow (dev/hackathon mode)
+    return next();
+  }
+  const provided = req.headers['x-api-key'];
+  const providedStr = Array.isArray(provided) ? provided[0] : (provided ?? '');
+  const secretBuf = Buffer.from(secret);
+  const providedBuf = Buffer.alloc(secretBuf.length);
+  Buffer.from(providedStr).copy(providedBuf);
+  if (!provided || !timingSafeEqual(secretBuf, providedBuf)) {
+    res.status(401).json({ success: false, error: 'Unauthorized — x-api-key header required' });
+    return;
+  }
+  next();
+}
 
 // Serve frontend build (production)
 const frontendDist = path.join(__dirname, '../../frontend/dist');
@@ -298,7 +325,7 @@ app.get('/api/treasury/history', async (_req, res) => {
 });
 
 // Sync treasury state
-app.post('/api/treasury/sync', async (_req, res) => {
+app.post('/api/treasury/sync', requireApiKey, async (_req, res) => {
   try {
     const state = await treasuryAgent?.syncState();
     res.json({ success: true, data: state });
@@ -329,7 +356,7 @@ app.get('/api/credit/:address', async (req, res) => {
 });
 
 // Evaluate credit
-app.post('/api/credit/:address/evaluate', async (req, res) => {
+app.post('/api/credit/:address/evaluate', requireApiKey, async (req, res) => {
   try {
     const { address } = req.params;
     if (!ethers.isAddress(address)) {
@@ -516,7 +543,7 @@ app.get('/api/yield/opportunities', async (_req, res) => {
 });
 
 // Emergency pause
-app.post('/api/emergency/pause', async (_req, res) => {
+app.post('/api/emergency/pause', requireApiKey, async (_req, res) => {
   try {
     await treasuryAgent?.emergencyPause();
     res.json({ success: true, message: 'Emergency pause activated' });
@@ -528,7 +555,7 @@ app.post('/api/emergency/pause', async (_req, res) => {
 // ==================== Loan Lifecycle Routes ====================
 
 // Borrow USDt
-app.post('/api/credit/:address/borrow', async (req, res) => {
+app.post('/api/credit/:address/borrow', requireApiKey, async (req, res) => {
   try {
     const { address } = req.params;
     if (!ethers.isAddress(address)) {
@@ -552,7 +579,7 @@ app.post('/api/credit/:address/borrow', async (req, res) => {
 });
 
 // Repay a loan
-app.post('/api/credit/:address/repay', async (req, res) => {
+app.post('/api/credit/:address/repay', requireApiKey, async (req, res) => {
   try {
     const { address } = req.params;
     if (!ethers.isAddress(address)) {
@@ -578,7 +605,7 @@ app.post('/api/credit/:address/repay', async (req, res) => {
 // ==================== Yield Routes ====================
 
 // Propose yield investment
-app.post('/api/yield/invest', async (req, res) => {
+app.post('/api/yield/invest', requireApiKey, async (req, res) => {
   try {
     const { protocol, amount, apy } = req.body as { protocol: string; amount: string; apy: number };
     if (!protocol || !amount) {
@@ -603,7 +630,7 @@ app.post('/api/yield/invest', async (req, res) => {
 // ==================== Withdrawal Routes ====================
 
 // Propose withdrawal
-app.post('/api/treasury/withdrawal/propose', async (req, res) => {
+app.post('/api/treasury/withdrawal/propose', requireApiKey, async (req, res) => {
   try {
     const { to, amount } = req.body as { to: string; amount: string };
     if (!to || !amount) {
@@ -641,7 +668,7 @@ app.get('/api/credit/:address/default-prediction', async (req, res) => {
 });
 
 // ZK Credit Proof: generate proof that score meets a tier
-app.post('/api/credit/:address/zk-proof', async (req, res) => {
+app.post('/api/credit/:address/zk-proof', requireApiKey, async (req, res) => {
   try {
     const { address } = req.params;
     const profile = await creditAgent?.getProfile(address);
@@ -676,7 +703,7 @@ app.post('/api/credit/:address/zk-proof', async (req, res) => {
 });
 
 // ZK Proof Verification
-app.post('/api/credit/verify-proof', async (req, res) => {
+app.post('/api/credit/verify-proof', requireApiKey, async (req, res) => {
   try {
     const proof = req.body as ZKCreditProof;
     if (!proof || !proof.commitment || !proof.rangeProof) {
@@ -711,7 +738,7 @@ app.get('/api/inter-agent/lending', async (_req, res) => {
 });
 
 // Inter-agent lending: Credit Agent requests capital from Treasury
-app.post('/api/inter-agent/request-capital', async (req, res) => {
+app.post('/api/inter-agent/request-capital', requireApiKey, async (req, res) => {
   try {
     const { amount, reason } = req.body as { amount: string; reason?: string };
     if (!amount) {
@@ -737,7 +764,7 @@ app.post('/api/inter-agent/request-capital', async (req, res) => {
 });
 
 // Inter-agent lending: trigger yield harvest → auto-service debt (demo/test)
-app.post('/api/inter-agent/harvest', async (_req, res) => {
+app.post('/api/inter-agent/harvest', requireApiKey, async (_req, res) => {
   try {
     if (!treasuryAgent) {
       res.status(503).json({ success: false, error: 'Treasury agent not initialized' });

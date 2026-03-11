@@ -124,18 +124,6 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
             "TreasuryVault: insufficient balance"
         );
         
-        // Check daily volume
-        uint256 currentDay = block.timestamp / 1 days;
-        DailyVolume storage dv = dailyVolumes[currentDay];
-        if (dv.day != currentDay) {
-            dv.volume = 0;
-            dv.day = currentDay;
-        }
-        require(
-            dv.volume + amount <= MAX_DAILY_VOLUME,
-            "TreasuryVault: exceeds daily volume"
-        );
-        
         // Create transaction
         bytes32 txHash = keccak256(
             abi.encodePacked(to, amount, block.timestamp, transactionCount++)
@@ -150,17 +138,12 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
         txn.hasSigned[msg.sender] = true;
         
         pendingTransactions.push(txHash);
-        dv.volume += amount;
+        // NOTE: volume is tracked at execution time to avoid phantom deductions
         
         uint256 executeAfter = block.timestamp + TIMELOCK_DELAY;
         
         emit WithdrawProposed(txHash, to, amount, executeAfter);
         emit TransactionSigned(txHash, msg.sender);
-        
-        // Auto-execute if below threshold and timelock passed
-        if (amount < MULTISIG_THRESHOLD && block.timestamp >= executeAfter) {
-            _executeWithdrawal(txHash);
-        }
         
         return txHash;
     }
@@ -214,13 +197,43 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
     function _executeWithdrawal(bytes32 txHash) internal {
         Transaction storage txn = transactions[txHash];
         
+        // Track daily volume at execution time (not at proposal time)
+        uint256 currentDay = block.timestamp / 1 days;
+        DailyVolume storage dv = dailyVolumes[currentDay];
+        if (dv.day != currentDay) {
+            dv.volume = 0;
+            dv.day = currentDay;
+        }
+        require(
+            dv.volume + txn.amount <= MAX_DAILY_VOLUME,
+            "TreasuryVault: exceeds daily volume"
+        );
+        dv.volume += txn.amount;
+        
         txn.executed = true;
         txn.executedAt = block.timestamp;
+        
+        // Remove from pendingTransactions (swap-and-pop)
+        _removePending(txHash);
         
         bool success = usdt.transfer(txn.to, txn.amount);
         require(success, "TreasuryVault: transfer failed");
         
         emit WithdrawExecuted(txHash, txn.to, txn.amount);
+    }
+
+    /**
+     * @dev Remove a txHash from pendingTransactions (swap-and-pop)
+     */
+    function _removePending(bytes32 txHash) internal {
+        uint256 len = pendingTransactions.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (pendingTransactions[i] == txHash) {
+                pendingTransactions[i] = pendingTransactions[len - 1];
+                pendingTransactions.pop();
+                break;
+            }
+        }
     }
     
     /**
@@ -232,13 +245,15 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
         uint256 apy
     ) external onlyAgent nonReentrant whenNotPaused {
         require(address(aavePool) != address(0), "TreasuryVault: Aave pool not set");
+        require(allowedProtocols[protocol], "TreasuryVault: protocol not allowed");
         require(amount > 0, "TreasuryVault: amount must be > 0");
         require(
             usdt.balanceOf(address(this)) >= amount,
             "TreasuryVault: insufficient balance"
         );
         
-        // Approve Aave pool to spend USDT
+        // Reset then set allowance — required for USDT (non-standard approve)
+        usdt.approve(address(aavePool), 0);
         usdt.approve(address(aavePool), amount);
         // Supply to Aave V3
         aavePool.supply(address(usdt), amount, address(this), 0);
