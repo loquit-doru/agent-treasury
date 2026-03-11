@@ -10,8 +10,6 @@ remappings = [
   "@openzeppelin/contracts/=contracts/lib/openzeppelin-contracts/contracts/",
   "forge-std/=contracts/lib/forge-std/src/",
 ]
-# Exclude OZ certora harnesses (missing patched sources)
-exclude = ["contracts/lib/openzeppelin-contracts/certora"]
 
 [profile.default.fmt]
 line_length = 120

@@ -75,7 +75,7 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 
 ## Smart Contracts (Deployed on Arbitrum One)
 
-### TreasuryVault (`0xCD24C4F53227623dFf2486B9E064aCa02e3064e5`)
+### TreasuryVault (`0x5503e9d53592B7D896E135804637C1710bDD5A64`)
 - Holds 50,000 USDt
 - **1-hour timelock** on withdrawals
 - **Daily volume limit**: 10,000 USDt/day
@@ -84,7 +84,7 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 - Roles: AGENT_ROLE, GUARDIAN_ROLE, EXECUTOR_ROLE
 - Key functions: `deposit()`, `proposeWithdrawal()`, `signTransaction()`, `executeWithdrawal()`, `investInYield()`, `harvestYield()`
 
-### CreditLine (`0x183A70Ec460A61427Bb17BB5cc20715bAd595507`)
+### CreditLine (`0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0`)
 - 3-tier credit system:
   - **Excellent** (≥800): 5,000 USDt limit, 5% APR
   - **Good** (600–799): 2,000 USDt limit, 10% APR
@@ -304,8 +304,8 @@ All dialogue rounds visible in real-time on the React dashboard.
 - **Dashboard**: https://agent-treasury.pages.dev
 - **API**: https://treasury.proceedgate.dev
 - **Contracts on Arbiscan (Arbitrum One)**:
-  - [TreasuryVault](https://arbiscan.io/address/0xCD24C4F53227623dFf2486B9E064aCa02e3064e5)
-  - [CreditLine](https://arbiscan.io/address/0x183A70Ec460A61427Bb17BB5cc20715bAd595507)
+  - [TreasuryVault](https://arbiscan.io/address/0x5503e9d53592B7D896E135804637C1710bDD5A64)
+  - [CreditLine](https://arbiscan.io/address/0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0)
   - [USDt](https://arbiscan.io/address/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9)
 
 ---

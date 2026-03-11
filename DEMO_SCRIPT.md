@@ -166,8 +166,8 @@ curl -X POST https://treasury.proceedgate.dev/api/credit/0x742d35Cc6634C0532925a
 - **Live API**: treasury.proceedgate.dev
 - **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + OpenRouter Gemini Flash (failover) + React + Tailwind + WebSocket
 - **Contracts (Arbitrum One)**:
-  - TreasuryVault: `0xCD24C4F53227623dFf2486B9E064aCa02e3064e5`
-  - CreditLine: `0x183A70Ec460A61427Bb17BB5cc20715bAd595507`
+  - TreasuryVault: `0x5503e9d53592B7D896E135804637C1710bDD5A64`
+  - CreditLine: `0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0`
   - USDt: `0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`
 - **Track**: Lending Bot (11/11 requirements)
 - **Agents**: Treasury Agent (yield, risk, pause) + Credit Agent (scoring, lending, repayment)
