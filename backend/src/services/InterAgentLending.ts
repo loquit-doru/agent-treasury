@@ -4,10 +4,11 @@
  * Flow:
  *   1. Credit Agent's lending pool drops below threshold (or explicit API call)
  *   2. InterAgentLending requests capital via EventBus → `credit:capital_request`
- *   3. Treasury Agent evaluates and responds via `treasury:capital_allocated`
+ *   3. Treasury Agent evaluates, proposes on-chain withdrawal via TreasuryVault
  *   4. Both sides record the inter-agent loan for tracking
  *
- * This module wires itself into the EventBus on construction — instantiate once.
+ * On-chain integration: capital allocations trigger `proposeWithdrawal` on-chain
+ * so the transfer is recorded in the TreasuryVault contract (Arbitrum One).
  */
 
 import EventBus from '../orchestrator/EventBus';
@@ -21,6 +22,7 @@ export interface InterAgentLoan {
   amount: string;          // USDt raw units (6 dec)
   requestedAt: number;
   allocatedAt?: number;
+  txHash?: string;         // on-chain proposeWithdrawal tx hash
   status: 'pending' | 'allocated' | 'repaid' | 'declined';
   reason: string;
 }
@@ -68,11 +70,13 @@ export class InterAgentLending {
   private getters: {
     getTreasuryBalance: () => bigint;
     getCreditPoolOutstanding: () => bigint;
+    proposeWithdrawal: (to: string, amount: bigint) => Promise<string | null>;
   };
 
   constructor(deps: {
     getTreasuryBalance: () => bigint;
     getCreditPoolOutstanding: () => bigint;
+    proposeWithdrawal: (to: string, amount: bigint) => Promise<string | null>;
   }) {
     this.getters = deps;
 
@@ -95,7 +99,9 @@ export class InterAgentLending {
     // Credit Agent requests capital
     EventBus.subscribe('credit:capital_request', (event) => {
       const { amount, reason } = event.payload as { amount: string; reason: string };
-      this.handleCapitalRequest(amount, reason);
+      this.handleCapitalRequest(amount, reason).catch(err =>
+        logger.error('handleCapitalRequest error', { error: err instanceof Error ? err.message : String(err) }),
+      );
     });
 
     // Treasury Agent harvests yield → auto-service outstanding inter-agent debt
@@ -106,7 +112,7 @@ export class InterAgentLending {
   }
 
   /** Handle an incoming capital request from the Credit Agent */
-  private handleCapitalRequest(rawAmount: string, _reason: string): void {
+  private async handleCapitalRequest(rawAmount: string, _reason: string): Promise<void> {
     const requestedAmount = BigInt(rawAmount);
     const treasuryBalance = this.getters.getTreasuryBalance();
 
@@ -122,8 +128,26 @@ export class InterAgentLending {
       reason: evaluation.reason,
     };
 
+    // On-chain: propose withdrawal through TreasuryVault for approved allocations
+    let txHash: string | null = null;
     if (evaluation.approved) {
       loan.allocatedAt = Date.now();
+      try {
+        // CreditLine contract address is the recipient — capital flows Treasury → CreditLine
+        txHash = await this.getters.proposeWithdrawal(
+          process.env.CREDIT_LINE_ADDRESS || '0x0000000000000000000000000000000000000000',
+          evaluation.allocated,
+        );
+        if (txHash) {
+          loan.txHash = txHash;
+          logger.info('Inter-agent capital transfer proposed on-chain', { loanId: loan.id, txHash });
+        }
+      } catch (err) {
+        logger.warn('On-chain inter-agent transfer failed (allocation tracked off-chain)', {
+          loanId: loan.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     this.loans.push(loan);
@@ -138,6 +162,7 @@ export class InterAgentLending {
         requestedAmount: rawAmount,
         allocatedAmount: evaluation.allocated.toString(),
         reason: evaluation.reason,
+        txHash: txHash || undefined,
         poolStatus: this.getPoolStatus(),
       },
     );
@@ -147,6 +172,7 @@ export class InterAgentLending {
       requested: rawAmount,
       allocated: evaluation.allocated.toString(),
       reason: evaluation.reason,
+      txHash: txHash || 'none',
     });
   }
 

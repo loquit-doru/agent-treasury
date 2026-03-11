@@ -177,6 +177,10 @@ async function initializeAgents(): Promise<void> {
         const loans = creditAgent?.getAllActiveLoans() || [];
         return loans.reduce((sum, l) => sum + BigInt(l.principal), 0n);
       },
+      proposeWithdrawal: async (to: string, amount: bigint) => {
+        if (!treasuryAgent) return null;
+        return treasuryAgent.proposeWithdrawal(to, amount);
+      },
     });
 
     // Setup event broadcasting
