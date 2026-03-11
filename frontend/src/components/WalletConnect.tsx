@@ -100,7 +100,7 @@ export function WalletConnect() {
             )}
           </button>
           <a
-            href={`https://sepolia.etherscan.io/address/${address}`}
+            href={`https://arbiscan.io/address/${address}`}
             target="_blank"
             rel="noopener noreferrer"
             className="p-1 hover:bg-gray-700 rounded transition-colors"

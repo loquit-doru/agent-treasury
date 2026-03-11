@@ -124,14 +124,14 @@ Start-Sleep -Seconds 4
 Write-Title "1/10" "SYSTEM HEALTH" "Verify both agents are running"
 Invoke-Demo -Method GET -Path '/health' `
     -Label 'Health Check' `
-    -Explanation 'Both Treasury + Credit agents running, connected to Sepolia.' `
+    -Explanation 'Both Treasury + Credit agents running, connected to Arbitrum One.' `
     -Highlight @('"status"', '"treasury"', '"credit"', '"operational"')
 
 # ── STEP 2: Treasury State ──
-Write-Title "2/10" "TREASURY STATE" "On-chain vault balance (USDt on Sepolia)"
+Write-Title "2/10" "TREASURY STATE" "On-chain vault balance (USDt on Arbitrum One)"
 Invoke-Demo -Method GET -Path '/api/treasury' `
     -Label 'Live Treasury Balance' `
-    -Explanation 'Real USDt balance from TreasuryVault smart contract on Sepolia.' `
+    -Explanation 'Real USDt balance from TreasuryVault smart contract on Arbitrum One.' `
     -Highlight @('"balance"', '"dailyVolume"', '"yieldPositions"')
 
 # ── STEP 3: Dashboard Overview ──
@@ -223,7 +223,7 @@ Write-Host "╠═════════════════════�
 Write-Host "║                                                                  ║" -ForegroundColor Green
 Write-Host "║  MUST-HAVES:                                                     ║" -ForegroundColor Green
 Write-Host "║   ✓ Autonomous lending decisions (no human prompts)              ║" -ForegroundColor White
-Write-Host "║   ✓ On-chain USDt settlement (Sepolia testnet)                   ║" -ForegroundColor White
+Write-Host "║   ✓ On-chain USDt settlement (Arbitrum One mainnet)              ║" -ForegroundColor White
 Write-Host "║   ✓ Auto repayment tracking + default detection                  ║" -ForegroundColor White
 Write-Host "║                                                                  ║" -ForegroundColor Green
 Write-Host "║  NICE-TO-HAVES:                                                  ║" -ForegroundColor Green

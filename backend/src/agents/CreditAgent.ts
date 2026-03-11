@@ -364,7 +364,7 @@ export class CreditAgent {
       }
 
       // Estimate account age from first block interaction
-      // (simplified: use tx count as proxy for Sepolia testnet)
+      // (simplified: use tx count as proxy)
       const accountAge = Math.min(txCount * 2, 730); // rough estimate in days
 
       // Volume estimate from balance (ETH → USD rough conversion for scoring)

@@ -4,7 +4,7 @@
 
 ### Treasury Agent
 - **Role**: Manages DAO treasury funds — deposits, withdrawals, yield optimization
-- **Wallet**: WDK-managed EVM wallet (Sepolia testnet)
+- **Wallet**: WDK-managed EVM wallet (Arbitrum One)
 - **Contracts**: TreasuryVault.sol
 - **Skill file**: `treasury/SKILL.md`
 

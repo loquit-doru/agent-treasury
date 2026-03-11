@@ -22,13 +22,13 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 
 | Layer | Technology |
 |-------|-----------|
-| Smart Contracts | Solidity 0.8.20, Foundry, deployed on Sepolia testnet |
+| Smart Contracts | Solidity 0.8.20, Foundry, deployed on Arbitrum One |
 | Backend | Node.js, Express, TypeScript, ethers.js |
 | AI/LLM | Groq (LLaMA 3.3 70B) via OpenAI-compatible API |
 | Wallet | WDK (`@tetherto/wdk-wallet-evm` v1.0.0-beta.8, `@tetherto/wdk-protocol-lending-aave-evm` v1.0.0-beta.3) — self-custodial, BIP-39 seed phrase |
 | Frontend | React 18, Vite, Tailwind CSS, WebSocket |
 | MCP | OpenClaw MCP server with 15 tools (stdio transport) |
-| Token | MockUSDt (ERC-20 on Sepolia, 6 decimals) |
+| Token | USDt (native Tether on Arbitrum One, 6 decimals) |
 
 ---
 
@@ -64,18 +64,18 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 └────────────────────────┬────────────────────────────────────────┘
                          │ ethers.js + WDK
 ┌────────────────────────▼────────────────────────────────────────┐
-│                    Sepolia Testnet                                │
+│                    Arbitrum One                                    │
 │   TreasuryVault (timelock + multi-sig + daily limits)            │
 │   CreditLine (3-tier: Excellent/Good/Poor, auto-default 30d)    │
-│   MockUSDt (ERC-20, 6 decimals)                                 │
+│   USDt (native Tether, 6 decimals)                              │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Smart Contracts (Deployed on Sepolia)
+## Smart Contracts (Deployed on Arbitrum One)
 
-### TreasuryVault (`0x4f3afE989B6911Ea5E6a324E834d0b39A0C894Fc`)
+### TreasuryVault (`0xCD24C4F53227623dFf2486B9E064aCa02e3064e5`)
 - Holds 50,000 USDt
 - **1-hour timelock** on withdrawals
 - **Daily volume limit**: 10,000 USDt/day
@@ -84,7 +84,7 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 - Roles: AGENT_ROLE, GUARDIAN_ROLE, EXECUTOR_ROLE
 - Key functions: `deposit()`, `proposeWithdrawal()`, `signTransaction()`, `executeWithdrawal()`, `investInYield()`, `harvestYield()`
 
-### CreditLine (`0x4B386c556F664d8823887a7ea0a8284D498E76b9`)
+### CreditLine (`0x183A70Ec460A61427Bb17BB5cc20715bAd595507`)
 - 3-tier credit system:
   - **Excellent** (≥800): 5,000 USDt limit, 5% APR
   - **Good** (600–799): 2,000 USDt limit, 10% APR
@@ -92,8 +92,8 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 - On-chain loan storage with default tracking (auto-default after 30 days)
 - Key functions: `updateProfile()`, `borrowFor()`, `repay()`, `markDefaulted()`, `calculateInterest()`, `getActiveLoans()`
 
-### MockUSDt (`0xddedeaDa24e18D41f9EbFfD306A2972385dF6A77`)
-- Standard ERC-20 with 6 decimals (mirrors real Tether)
+### USDt (`0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`)
+- Native Tether on Arbitrum One with 6 decimals
 
 ---
 
@@ -136,7 +136,7 @@ Base = 500
 **On-chain data used**:
 - `provider.getTransactionCount(address)` — real
 - ETH balance × 2500 — volume estimate (proxy)
-- Account age estimated from tx count (Sepolia limitation)
+- Account age estimated from tx count (simplified for scoring)
 
 **LLM personality**: Fair but cautious, treasury capital preservation priority.
 
@@ -277,7 +277,7 @@ All dialogue rounds visible in real-time on the React dashboard.
 | # | Requirement | Implementation |
 |---|-------------|---------------|
 | 1 | Autonomous lending decisions | Credit Agent evaluates + LLM decides, no human prompt |
-| 2 | On-chain USDt settlement | CreditLine.borrowFor() settles on Sepolia with MockUSDt |
+| 2 | On-chain USDt settlement | CreditLine.borrowFor() settles on Arbitrum One with native USDt |
 | 3 | Auto repayment tracking | 60s monitoring loop, auto-markDefaulted after 30 days |
 
 ### Nice-to-Haves (4/4)
@@ -303,10 +303,10 @@ All dialogue rounds visible in real-time on the React dashboard.
 - **GitHub**: https://github.com/loquit-doru/agent-treasury
 - **Dashboard**: https://agent-treasury.pages.dev
 - **API**: https://treasury.proceedgate.dev
-- **Contracts on Etherscan (Sepolia)**:
-  - [TreasuryVault](https://sepolia.etherscan.io/address/0x4f3afE989B6911Ea5E6a324E834d0b39A0C894Fc)
-  - [CreditLine](https://sepolia.etherscan.io/address/0x4B386c556F664d8823887a7ea0a8284D498E76b9)
-  - [MockUSDt](https://sepolia.etherscan.io/address/0xddedeaDa24e18D41f9EbFfD306A2972385dF6A77)
+- **Contracts on Arbiscan (Arbitrum One)**:
+  - [TreasuryVault](https://arbiscan.io/address/0xCD24C4F53227623dFf2486B9E064aCa02e3064e5)
+  - [CreditLine](https://arbiscan.io/address/0x183A70Ec460A61427Bb17BB5cc20715bAd595507)
+  - [USDt](https://arbiscan.io/address/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9)
 
 ---
 
@@ -314,9 +314,9 @@ All dialogue rounds visible in real-time on the React dashboard.
 
 1. **Yield accrual is deterministic for demo reproducibility** — not real Aave/Compound returns. The agent decision logic (evaluateYieldOpportunities, harvestAndServiceDebt) is fully functional. The integration layer exists (WDK Aave protocol registered) but data is seeded for testnet stability.
 
-2. **Credit scoring volume estimate** — uses ETH balance × 2500 as a proxy for historical transaction volume (Sepolia doesn't have rich historical data).
+2. **Credit scoring volume estimate** — uses ETH balance × 2500 as a proxy for historical transaction volume.
 
-3. **MockUSDt** — not real Tether. Standard for testnet hackathons.
+3. **Native USDt on Arbitrum One** — real Tether, not a mock token.
 
 4. **Chart history is seeded** — initial 7-day chart generated from current real state for deterministic demo. Real snapshots accumulate naturally after startup (every 30s sync cycle).
 

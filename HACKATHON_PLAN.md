@@ -1,5 +1,7 @@
 # AgentTreasury — Hackathon Plan (Mar 2-22, 2026)
 
+> **⚠️ NOTE**: This is the original planning document. The project was initially developed on Sepolia testnet and has since been fully migrated to **Arbitrum One mainnet**. Sepolia references below are historical.
+
 > Tether Hackathon Galactica | DoraHacks | Best Overall Strategy
 >
 > **Concept**: CFO autonom pentru DAOs — Treasury Agent + Credit Agent, construit cu WDK + OpenClaw.

@@ -21,7 +21,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 
 #### 🏦 Lending Bot — Must Haves ✅
 - ✅ Agent makes lending decisions **without human prompts** (credit scoring + LLM evaluation)
-- ✅ All transactions settle **on-chain using USDt** (Sepolia testnet)
+- ✅ All transactions settle **on-chain using USDt** (Arbitrum One mainnet)
 - ✅ Agent **autonomously tracks and collects repayments** (30-day terms, auto-default)
 
 #### 🏦 Lending Bot — Nice to Haves ✅
@@ -75,7 +75,7 @@ agent-treasury/
 │   ├── TreasuryVault.sol         # Multi-sig vault + yield (RBAC, timelock)
 │   ├── CreditLine.sol            # Credit scoring + lending (3 tiers)
 │   ├── MockUSDT.sol              # Test token for local dev
-│   └── script/DeploySepolia.s.sol
+│   └── script/Deploy.s.sol
 ├── backend/                      # Node.js + Express + WS
 │   └── src/
 │       ├── agents/
@@ -168,12 +168,12 @@ $env:GROQ_API_KEY = "gsk_..."   # optional (free at console.groq.com)
 .\scripts\demo-local.ps1
 ```
 
-### Full Setup (Sepolia)
+### Full Setup (Arbitrum One)
 
 #### Prerequisites (additional)
 - WDK seed phrase (12/24-word mnemonic)
-- Sepolia ETH for gas
-- Sepolia RPC URL (Alchemy/Infura)
+- ETH on Arbitrum One for gas
+- Arbitrum RPC URL (public or Alchemy/Infura)
 
 ### 1. Install
 
@@ -211,10 +211,10 @@ LLM_PROVIDER_NAME=groq
 WDK_SEED_PHRASE="your twelve word mnemonic phrase goes here ..."
 
 # Chain
-RPC_URL=https://rpc.sepolia.org
-CHAIN_ID=11155111
-USDT_ADDRESS=0xaA8E23Fb1079EA71e0a56F48a2aA51851D8433D0
-AAVE_POOL_ADDRESS=0x6Ae43d3271ff6888e7Fc43Fd7321a503104E31D7
+RPC_URL=https://arbitrum-one-rpc.publicnode.com
+CHAIN_ID=42161
+USDT_ADDRESS=0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9
+AAVE_POOL_ADDRESS=0x794a61358D6845594F94dc1DB02A252b5b4814aD
 TREASURY_VAULT_ADDRESS=<deployed>
 CREDIT_LINE_ADDRESS=<deployed>
 ```
@@ -223,7 +223,7 @@ CREDIT_LINE_ADDRESS=<deployed>
 
 ```bash
 npm run contracts:test           # Run Forge tests first
-npm run contracts:deploy         # Deploy to Sepolia
+npm run contracts:deploy         # Deploy to Arbitrum One
 ```
 
 ### 4. Run
@@ -435,11 +435,11 @@ Agents communicate through a pub/sub EventBus rather than direct method calls. T
 
 ## Known Limitations
 
-- **Aave yield may fail on local Anvil fork** — `TreasuryVault: protocol not allowed` if Aave protocol address isn't allowlisted on-chain. Works correctly on Sepolia with proper setup.
+- **Aave yield may fail on local Anvil fork** — `TreasuryVault: protocol not allowed` if Aave protocol address isn't allowlisted on-chain. Works correctly on Arbitrum One with proper setup.
 - **In-memory state** — Agent decisions and dialogue rounds are stored in memory. A backend restart loses history. Persistent storage (SQLite/Postgres) is a natural next step.
 - **Single-node deployment** — Not designed for horizontal scaling. One backend instance manages both agents.
 - **No WDK for CreditLine contracts** — WDK handles wallet + Aave; custom smart contract interactions (CreditLine) use ethers.js directly since WDK doesn't have a lending-credit protocol module.
-- **Testnet only** — All development and testing done on Sepolia. Mainnet deployment would need additional auditing and security review.
+- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt. Initial development was on Sepolia, now fully migrated to Arbitrum One.
 
 ## License
 

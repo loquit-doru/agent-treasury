@@ -48,7 +48,7 @@ without revealing the exact score. Privacy by design.
 [WDK + ON-CHAIN — 1:40–1:55]
 
 Under the hood — Tether's WDK handles wallets and signing.
-And this is live on Sepolia.
+And this is live on Arbitrum One.
 
 TreasuryVault — real contract. CreditLine — real transactions.
 Every loan, every repayment — on-chain and verifiable.

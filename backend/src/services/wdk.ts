@@ -30,7 +30,7 @@ export async function initWdk(cfg: WdkConfig): Promise<WDK> {
 
   const wdk = new WDK(cfg.seedPhrase);
 
-  // Register EVM wallet (Sepolia)
+  // Register EVM wallet (Arbitrum One)
   wdk.registerWallet('ethereum', WalletManagerEvm, {
     rpcUrl: cfg.rpcUrl,
     chainId: cfg.chainId,

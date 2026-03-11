@@ -77,15 +77,15 @@
 
 ### 🔧 WDK + ON-CHAIN (1:40 – 1:55)
 
-**[Screen: Etherscan Sepolia tabs — pre-opened]**
+**[Screen: Arbiscan tabs — pre-opened]**
 
 > Under the hood — Tether's WDK handles wallets and signing.
-> And this is live on Sepolia.
+> And this is live on Arbitrum One.
 >
 > TreasuryVault — real contract. CreditLine — real transactions.
 > Every loan, every repayment — on-chain and verifiable.
 >
-> *(Switch between pre-opened Etherscan tabs — 3 seconds each)*
+> *(Switch between pre-opened Arbiscan tabs — 3 seconds each)*
 
 ---
 
@@ -133,7 +133,7 @@
 1. Hook + Loan Flow (0:00–0:40)
 2. Treasury + Board Meeting (0:40–1:20)
 3. ML/ZK + Health (1:20–1:40)
-4. WDK + Etherscan + Repo + CTA (1:40–2:25)
+4. WDK + Arbiscan + Repo + CTA (1:40–2:25)
 
 ### Browser Setup
 
@@ -143,7 +143,7 @@
 - [x] Dark mode dashboard confirmed
 - [x] DevTools: CLOSED
 - [x] Notifications: Do Not Disturb
-- [x] Max 3 tabs: Dashboard | Etherscan | GitHub
+- [x] Max 3 tabs: Dashboard | Arbiscan | GitHub
 
 ### Pre-Record Checklist
 
@@ -151,7 +151,7 @@
 - [ ] Test recording 30s — verifică audio levels
 - [ ] Dashboard pre-populat: 4-5 events, 1 loan activ, yield positions
 - [ ] Board Meeting endpoint testat
-- [ ] Etherscan tabs pre-deschise cu contractele
+- [ ] Arbiscan tabs pre-deschise cu contractele
 
 **Pre-trigger (30s înainte de record):**
 ```bash
@@ -165,10 +165,10 @@ curl -X POST https://treasury.proceedgate.dev/api/credit/0x742d35Cc6634C0532925a
 - **Live Dashboard**: agent-treasury.pages.dev
 - **Live API**: treasury.proceedgate.dev
 - **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + OpenRouter Gemini Flash (failover) + React + Tailwind + WebSocket
-- **Contracts (Sepolia)**:
-  - TreasuryVault: `0x4f3afE989B6911Ea5E6a324E834d0b39A0C894Fc`
-  - CreditLine: `0x4B386c556F664d8823887a7ea0a8284D498E76b9`
-  - MockUSDt: `0xddedeaDa24e18D41f9EbFfD306A2972385dF6A77`
+- **Contracts (Arbitrum One)**:
+  - TreasuryVault: `0xCD24C4F53227623dFf2486B9E064aCa02e3064e5`
+  - CreditLine: `0x183A70Ec460A61427Bb17BB5cc20715bAd595507`
+  - USDt: `0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`
 - **Track**: Lending Bot (11/11 requirements)
 - **Agents**: Treasury Agent (yield, risk, pause) + Credit Agent (scoring, lending, repayment)
 - **Bonuses**: Inter-agent lending, ML default prediction, ZK-inspired credit proofs, yield-based debt servicing, treasury health scoring
