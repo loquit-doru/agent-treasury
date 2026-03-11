@@ -259,8 +259,35 @@ contract CreditLine is ReentrancyGuard, AccessControl {
     /**
      * @dev Borrow on behalf of a user (agent/relayer pattern)
      * Only callable by AGENT_ROLE — the backend acts as operator.
+     * Uses profile defaults for rate and 30-day duration.
      */
     function borrowFor(address borrower, uint256 amount) external onlyAgent nonReentrant {
+        _borrowFor(borrower, amount, 0, 0);
+    }
+
+    /**
+     * @dev Borrow with custom terms negotiated by the LLM agent.
+     * @param customRateBps Custom interest rate in basis points (0 = use profile default)
+     * @param customDurationSec Custom loan duration in seconds (0 = 30 days default)
+     * Rate is clamped: min(profileRate, customRate) — agent can only
+     * offer BETTER terms than the tier default, never worse.
+     * Duration: 7 days minimum, 90 days maximum.
+     */
+    function borrowForCustom(
+        address borrower,
+        uint256 amount,
+        uint256 customRateBps,
+        uint256 customDurationSec
+    ) external onlyAgent nonReentrant {
+        _borrowFor(borrower, amount, customRateBps, customDurationSec);
+    }
+
+    function _borrowFor(
+        address borrower,
+        uint256 amount,
+        uint256 customRateBps,
+        uint256 customDurationSec
+    ) internal {
         require(borrower != address(0), "CreditLine: invalid borrower");
         CreditProfile storage profile = profiles[borrower];
         require(profile.exists, "CreditLine: no credit profile");
@@ -269,10 +296,22 @@ contract CreditLine is ReentrancyGuard, AccessControl {
         uint256 availableCredit = profile.limit - profile.borrowed;
         require(amount <= availableCredit, "CreditLine: exceeds credit limit");
 
-        uint256 loanId = loanCount++;
+        // Rate: use custom if provided and <= profile rate (agent can't charge MORE than tier)
         uint256 interestRate = profile.rate;
-        uint256 dueDate = block.timestamp + 30 days;
+        if (customRateBps > 0 && customRateBps <= profile.rate) {
+            interestRate = customRateBps;
+        }
 
+        // Duration: 7d min, 90d max, default 30d
+        uint256 duration = 30 days;
+        if (customDurationSec > 0) {
+            if (customDurationSec < 7 days) customDurationSec = 7 days;
+            if (customDurationSec > 90 days) customDurationSec = 90 days;
+            duration = customDurationSec;
+        }
+        uint256 dueDate = block.timestamp + duration;
+
+        uint256 loanId = loanCount++;
         loans[loanId] = Loan({
             borrower: borrower,
             principal: amount,

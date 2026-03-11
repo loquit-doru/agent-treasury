@@ -42,6 +42,7 @@ const CREDIT_LINE_ABI = [
   'function updateProfile(address user, uint256 transactionCount, uint256 volumeUSD, uint256 accountAge, uint256 repaidLoans, uint256 defaults)',
   'function borrow(uint256 amount)',
   'function borrowFor(address borrower, uint256 amount)',
+  'function borrowForCustom(address borrower, uint256 amount, uint256 customRateBps, uint256 customDurationSec)',
   'function repay(uint256 loanId, uint256 amount)',
   'function repayFor(address borrower, uint256 loanId, uint256 amount)',
   'function markDefaulted(uint256 loanId)',
@@ -559,21 +560,26 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         return null;
       }
 
-      // Execute on-chain borrow via WDK (fallback: ethers signer)
+      // Execute on-chain borrow with LLM-negotiated terms via borrowForCustom
       let txHash: string | undefined;
       let onChainLoanId: number | undefined;
+      const customDurationSec = evaluation.durationDays * 86400;
       try {
-        const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowFor', [address, amount]);
-        txHash = await this.sendWriteTx(this.config.creditLineAddress, data, `borrowFor(${address})`);
+        const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowForCustom', [
+          address, amount, evaluation.rateBps, customDurationSec,
+        ]);
+        txHash = await this.sendWriteTx(this.config.creditLineAddress, data, `borrowForCustom(${address})`);
         // Read loanCount to get the new loan ID
         const loanCount = await this.creditContract.loanCount();
         onChainLoanId = Number(loanCount) - 1;
-        logger.info('On-chain borrow succeeded', { txHash, onChainLoanId });
+        logger.info('On-chain borrow succeeded with LLM terms', {
+          txHash, onChainLoanId, rateBps: evaluation.rateBps, durationDays: evaluation.durationDays,
+        });
       } catch (err) {
         logger.error('On-chain borrow tx failed', { err: err instanceof Error ? err.message : String(err) });
       }
 
-      // Read actual dueDate from chain (contract hardcodes 30 days, may differ from LLM terms)
+      // Read actual dueDate from chain (now uses LLM-negotiated duration via borrowForCustom)
       const now = Math.floor(Date.now() / 1000);
       let dueDate = now + evaluation.durationDays * 86400; // fallback: LLM-negotiated
       if (onChainLoanId !== undefined) {
