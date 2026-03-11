@@ -100,19 +100,19 @@ export class AgentDialogue {
   start(): void {
     logger.info('AgentDialogue orchestrator starting...');
 
-    // First dialogue after 20s (let agents initialize first)
+    // First dialogue after 30s (let agents initialize first)
     setTimeout(() => {
       this.runDialogueRound().catch(err =>
         logger.error('Initial dialogue round failed', { err })
       );
-    }, 20000);
+    }, 30_000);
 
-    // Then every 45 seconds
+    // Then every 180 seconds — fits Groq free-tier 30 RPM
     this.dialogueInterval = setInterval(() => {
       this.runDialogueRound().catch(err =>
         logger.error('Dialogue round failed', { err })
       );
-    }, 45000);
+    }, 180_000);
   }
 
   /**
@@ -236,10 +236,97 @@ export class AgentDialogue {
       status: 'executed',
     });
 
+    // Extract and execute actionable decisions from consensus
+    await this.executeConsensusActions(topic.id, consensus, stateContext);
+
     logger.info(`Dialogue round complete: ${topic.id}`, {
       turns: turns.length,
       consensusLength: consensus.length,
     });
+  }
+
+  /**
+   * Parse consensus for actionable decisions and emit events that agents execute.
+   * Bridges the gap between "board discussion" and "real on-chain actions".
+   */
+  private async executeConsensusActions(topicId: string, consensus: string, stateContext: string): Promise<void> {
+    try {
+      const response = await this.llm.chat({
+        messages: [
+          {
+            role: 'system',
+            content: `You are an action extractor. Given a board consensus and system state, extract 0-2 concrete actions the agents should take. Only extract actions that are clearly stated in the consensus.\n\nAvailable actions:\n- harvest_yield: Harvest yield from a protocol (params: protocol, amount)\n- invest_yield: Invest idle funds in yield (params: protocol, amount)\n- adjust_risk: Change risk tolerance (params: level: "conservative"|"moderate"|"aggressive")\n- extend_credit: Proactively offer credit to a borrower (params: address, amount)\n- reduce_exposure: Tighten lending criteria (params: reason)\n\nRespond with JSON array: [{"action": "<action_name>", "params": {...}, "reasoning": "<why>"}]\nIf no concrete actions can be extracted, respond: []`,
+          },
+          {
+            role: 'user',
+            content: `Topic: ${topicId}\nConsensus: ${consensus}\n\nSystem State:\n${stateContext}`,
+          },
+        ],
+        temperature: 0.1,
+        max_tokens: 200,
+      });
+
+      const raw = response.choices[0]?.message?.content?.trim() || '[]';
+      // LLM sometimes wraps JSON in markdown or adds trailing text — extract the array
+      let cleaned = raw.replace(/```json?\n?|```/g, '').trim();
+      // Try to extract JSON array from the response
+      const arrMatch = cleaned.match(/\[[\s\S]*\]/);
+      if (!arrMatch) {
+        logger.debug('No JSON array found in consensus action response, skipping');
+        return;
+      }
+      let jsonStr = arrMatch[0];
+      // Fix common LLM JSON issues: single quotes → double quotes (simple heuristic)
+      try {
+        JSON.parse(jsonStr);
+      } catch {
+        jsonStr = jsonStr
+          .replace(/'/g, '"')
+          .replace(/,\s*([}\]])/g, '$1')           // trailing commas
+          .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":'); // unquoted keys
+      }
+      const actions: Array<{ action: string; params: Record<string, unknown>; reasoning: string }> =
+        JSON.parse(jsonStr);
+
+      for (const act of actions) {
+        logger.info('Executing dialogue consensus action', { action: act.action, params: act.params });
+
+        // Emit actionable event — agents listen and execute
+        EventBus.emitEvent('dialogue:consensus_action', 'treasury', {
+          action: act.action,
+          params: act.params,
+          reasoning: act.reasoning,
+          topicId,
+        });
+
+        // Direct agent calls for treasury actions
+        if (act.action === 'harvest_yield' && act.params.protocol) {
+          EventBus.emitEvent('yield:harvest_requested', 'treasury', {
+            protocol: String(act.params.protocol).toLowerCase(),
+            expectedAmount: String(act.params.amount || '0'),
+          });
+        } else if (act.action === 'invest_yield' && act.params.amount) {
+          EventBus.emitEvent('dialogue:invest_requested', 'treasury', {
+            protocol: String(act.params.protocol || 'aave'),
+            amount: String(act.params.amount),
+          });
+        }
+      }
+
+      if (actions.length > 0) {
+        EventBus.emitEvent('dialogue:actions_executed', 'treasury', {
+          topicId,
+          actionCount: actions.length,
+          actions: actions.map(a => a.action),
+          status: 'executed',
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to extract consensus actions (non-critical)', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      // Non-critical — dialogue still provides value even without extracted actions
+    }
   }
 
   /**

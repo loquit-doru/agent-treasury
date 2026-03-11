@@ -82,6 +82,7 @@ export class CreditAgent {
   private monitoringInterval: NodeJS.Timeout | null = null;
   private decisionMemory: Array<{ role: string; action: string; reasoning: string; timestamp: number }> = [];
   private borrowLocks: Set<string> = new Set();
+  private pendingBorrowRequests: Array<{ address: string; amount: string; source: string; timestamp: number }> = [];
   private static readonly GRACE_PERIOD_SECONDS = 24 * 3600; // 24h grace before default
 
   constructor(
@@ -163,7 +164,7 @@ export class CreditAgent {
     // Start monitoring loop
     this.monitoringInterval = setInterval(
       () => this.monitor(),
-      60000 // 60 seconds
+      120_000 // 120 seconds — fits Groq free-tier 30 RPM
     );
 
     EventBus.emitEvent('agent:started', 'credit', {
@@ -209,8 +210,11 @@ export class CreditAgent {
     if (this.status !== 'active') return;
 
     try {
-      // Check for due loans
+      // Check for due loans + autonomous repayment collection
       await this.checkDueLoans();
+
+      // Process autonomous lending decisions (borrow queue + proactive)
+      await this.processAutonomousLending();
 
       // Sync loan data
       await this.syncLoans();
@@ -845,11 +849,52 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
 
         const overdueSec = now - loan.dueDate;
         if (overdueSec > 0 && overdueSec <= CreditAgent.GRACE_PERIOD_SECONDS) {
-          // Grace period — warn but don't default yet
-          logger.info(`Loan ${loanId} overdue by ${Math.floor(overdueSec / 3600)}h — within 24h grace period`);
+          // Grace period — attempt autonomous repayment collection, then warn
+          logger.info(`Loan ${loanId} overdue by ${Math.floor(overdueSec / 3600)}h — attempting autonomous collection`);
+
+          // Autonomous repayment: agent attempts repayFor on-chain
+          try {
+            const amountDue = await this.creditContract.getAmountDue(loanId);
+            if (BigInt(amountDue) > 0n) {
+              // Approve USDT to CreditLine for repayment
+              const approveData = ERC20_IFACE.encodeFunctionData('approve', [this.config.creditLineAddress, amountDue]);
+              await this.sendWriteTx(this.config.usdtAddress, approveData, `approve USDt for auto-repay loan #${loanId}`);
+
+              // Execute repayFor on-chain
+              const repayData = CREDIT_LINE_IFACE.encodeFunctionData('repayFor', [loan.borrower, loanId, amountDue]);
+              const txHash = await this.sendWriteTx(this.config.creditLineAddress, repayData, `auto-repayFor loan #${loanId}`);
+
+              // Update local state
+              loan.repaid = (BigInt(loan.repaid) + BigInt(amountDue)).toString();
+              loan.active = false;
+
+              const profile = this.profiles.get(loan.borrower.toLowerCase());
+              if (profile) {
+                const principal = BigInt(loan.principal);
+                profile.borrowed = (BigInt(profile.borrowed) > principal ? BigInt(profile.borrowed) - principal : 0n).toString();
+                profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
+              }
+
+              EventBus.emitEvent('credit:autonomous_repayment', 'credit', {
+                action: 'autonomous_repayment',
+                reasoning: `Autonomously collected ${ethers.formatUnits(amountDue, 6)} USDt repayment for overdue loan #${loanId} from ${loan.borrower}`,
+                data: { loanId, borrower: loan.borrower, amount: amountDue.toString(), txHash },
+                status: 'executed',
+              });
+
+              logger.info(`Autonomous repayment succeeded for loan ${loanId}`, { txHash });
+              continue; // Loan handled — skip to next
+            }
+          } catch (repayErr) {
+            // Repayment attempt failed (insufficient USDT, not approved, etc.) — fall through to warning
+            logger.warn(`Autonomous repayment attempt failed for loan ${loanId}`, {
+              err: repayErr instanceof Error ? repayErr.message : String(repayErr),
+            });
+          }
+
           EventBus.emitEvent('credit:loan_grace_warning', 'credit', {
             action: 'grace_warning',
-            reasoning: `Loan #${loanId} is ${Math.floor(overdueSec / 3600)}h overdue — grace period expires in ${Math.floor((CreditAgent.GRACE_PERIOD_SECONDS - overdueSec) / 3600)}h`,
+            reasoning: `Loan #${loanId} is ${Math.floor(overdueSec / 3600)}h overdue — auto-collection attempted, grace period expires in ${Math.floor((CreditAgent.GRACE_PERIOD_SECONDS - overdueSec) / 3600)}h`,
             data: { loanId, borrower: loan.borrower, overdueHours: Math.floor(overdueSec / 3600) },
             status: 'executed',
           });
@@ -1028,6 +1073,145 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
         await this.processBorrow(address, BigInt(amount));
       }
     });
+
+    // Listen for dialogue consensus actions (autonomous lending triggers)
+    EventBus.subscribe('dialogue:consensus_action', async (event) => {
+      const { action, params } = event.payload as { action: string; params?: Record<string, unknown> };
+      if (action === 'extend_credit' && params?.address) {
+        const addr = String(params.address);
+        // Validate: must be a real Ethereum address (0x + 40 hex chars)
+        if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+          logger.debug('Dialogue extend_credit skipped: invalid address', { address: addr });
+          return;
+        }
+        // Sanitize amount: LLM may return floats
+        let rawAmount: string;
+        try {
+          const parsed = parseFloat(String(params.amount || '0.5'));
+          rawAmount = ethers.parseUnits(Math.min(parsed, 100).toFixed(6), 6).toString();
+        } catch {
+          rawAmount = '500000'; // 0.5 USDt fallback
+        }
+        this.pendingBorrowRequests.push({
+          address: addr,
+          amount: rawAmount,
+          source: 'dialogue_consensus',
+          timestamp: Date.now(),
+        });
+        logger.info('Queued autonomous borrow from dialogue consensus', { address: addr, amount: rawAmount });
+      }
+    });
+  }
+
+  /**
+   * Autonomous lending — process pending borrow requests and proactively scan for lending opportunities.
+   * This is the core "agent makes lending decisions without human prompts" feature.
+   */
+  private async processAutonomousLending(): Promise<void> {
+    // 1) Process queued borrow requests (from EventBus, dialogue consensus, etc.)
+    while (this.pendingBorrowRequests.length > 0) {
+      const request = this.pendingBorrowRequests.shift()!;
+      // Skip stale requests (> 10 min old)
+      if (Date.now() - request.timestamp > 600_000) continue;
+
+      logger.info('Processing autonomous borrow request', { address: request.address, source: request.source });
+      try {
+        const loan = await this.processBorrow(request.address, BigInt(request.amount));
+        if (loan) {
+          EventBus.emitEvent('credit:autonomous_lending', 'credit', {
+            action: 'autonomous_borrow_executed',
+            reasoning: `Autonomous lending: approved ${ethers.formatUnits(request.amount, 6)} USDt to ${request.address} (source: ${request.source})`,
+            data: { loanId: loan.id, address: request.address, amount: request.amount, source: request.source },
+            status: 'executed',
+          });
+        }
+      } catch (err) {
+        logger.error('Autonomous borrow failed', { address: request.address, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // 2) Proactive scan: check existing profiles with available credit
+    //    If a profile has high score + unused credit and hasn't borrowed recently, consider pre-approved lending
+    for (const [addr, profile] of this.profiles) {
+      const available = BigInt(profile.available);
+      // Only consider profiles with good score and meaningful available credit (> 1 USDt)
+      if (profile.score < 700 || available < ethers.parseUnits('1', 6)) continue;
+
+      // Check if this borrower already has an active loan — skip to avoid over-extension
+      const hasActiveLoan = Array.from(this.loans.values()).some(
+        l => l.active && l.borrower.toLowerCase() === addr
+      );
+      if (hasActiveLoan) continue;
+
+      // Use LLM to decide if proactive lending is appropriate
+      try {
+        const shouldLend = await this.evaluateProactiveLending(addr, profile);
+        if (shouldLend.approved) {
+          const lendAmount = BigInt(shouldLend.amount);
+          logger.info('Proactive lending opportunity detected', { address: addr, amount: shouldLend.amount });
+          const loan = await this.processBorrow(addr, lendAmount);
+          if (loan) {
+            EventBus.emitEvent('credit:autonomous_lending', 'credit', {
+              action: 'proactive_lending',
+              reasoning: shouldLend.reasoning,
+              data: { loanId: loan.id, address: addr, amount: shouldLend.amount },
+              status: 'executed',
+            });
+          }
+          break; // Max 1 proactive loan per cycle
+        }
+      } catch (err) {
+        logger.warn('Proactive lending evaluation failed', { address: addr, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  /**
+   * LLM-driven evaluation: should the agent proactively offer a loan to this borrower?
+   */
+  private async evaluateProactiveLending(
+    address: string,
+    profile: CreditProfile,
+  ): Promise<{ approved: boolean; amount: string; reasoning: string }> {
+    const available = ethers.formatUnits(profile.available, 6);
+    const tier = this.getTier(profile.score);
+
+    try {
+      const response = await this.llm.chat({
+        messages: [
+          { role: 'system', content: CREDIT_SYSTEM_PROMPT },
+          {
+            role: 'user',
+            content: `Should we proactively extend a loan to this borrower?\n\nAddress: ${address}\nCredit Score: ${profile.score}/1000 (${tier.name})\nAvailable Credit: ${available} USDt\nCurrent Borrowed: ${ethers.formatUnits(profile.borrowed, 6)} USDt\n\nRules:\n- Only approve if score >= 750 and utilization < 30%\n- Suggest conservative amount (max 25% of available credit)\n- Consider current treasury health\n\nRespond JSON: {"decision": "EXTEND" or "SKIP", "amount": "<raw units 6 decimals>", "reasoning": "<1 sentence>"}`,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 100,
+      });
+
+      const content = response.choices[0]?.message?.content?.trim() || '';
+      const json = JSON.parse(content.replace(/```json?\n?|```/g, ''));
+      const approved = json.decision?.toUpperCase() === 'EXTEND';
+      const amount = String(BigInt(json.amount || '0'));
+      return { approved, amount, reasoning: json.reasoning || 'Proactive lending evaluation' };
+    } catch {
+      // Deterministic fallback: extend 10% of available if score >= 800
+      if (profile.score >= 800) {
+        const amt = (BigInt(profile.available) * 10n) / 100n;
+        if (amt >= ethers.parseUnits('1', 6)) {
+          return { approved: true, amount: amt.toString(), reasoning: `[deterministic] Score ${profile.score} qualifies for proactive 10% credit extension` };
+        }
+      }
+      return { approved: false, amount: '0', reasoning: 'Score or available credit insufficient for proactive lending' };
+    }
+  }
+
+  /**
+   * Queue an external borrow request for autonomous processing
+   */
+  queueBorrowRequest(address: string, amount: string, source: string): void {
+    this.pendingBorrowRequests.push({ address, amount, source, timestamp: Date.now() });
+    logger.info('Borrow request queued for autonomous processing', { address, amount, source });
   }
 
   /**

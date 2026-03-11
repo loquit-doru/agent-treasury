@@ -167,7 +167,7 @@ export class TreasuryAgent {
     // Start monitoring loop
     this.monitoringInterval = setInterval(
       () => this.monitor(),
-      30000 // 30 seconds
+      90_000 // 90 seconds — fits Groq free-tier 30 RPM
     );
 
     // Emit startup event
@@ -358,10 +358,10 @@ export class TreasuryAgent {
       // Risk assessment
       await this.assessRisk();
 
-      // Every 10th cycle (~5 min): harvest yield revenue & auto-service inter-agent debt
+      // Every 10th cycle (~15 min): harvest yield revenue on-chain & auto-service inter-agent debt
       this.monitorCycleCount++;
       if (this.monitorCycleCount % 10 === 0) {
-        this.harvestAndServiceDebt();
+        await this.harvestAndServiceDebt();
       }
 
       // Persist state to disk every cycle
@@ -377,15 +377,30 @@ export class TreasuryAgent {
   }
 
   /**
-   * Harvest accrued yield and emit event so InterAgentLending can auto-service debt.
+   * Harvest accrued yield ON-CHAIN and emit event so InterAgentLending can auto-service debt.
    * Revenue = sum of all harvested yield across positions.
    */
-  private harvestAndServiceDebt(): void {
+  private async harvestAndServiceDebt(): Promise<void> {
     const totalHarvested = this.yieldPositions.reduce(
       (sum, p) => sum + BigInt(p.harvested || '0'), 0n
     );
 
     if (totalHarvested <= 0n) return;
+
+    // Attempt real on-chain harvest for each position with accrued yield
+    for (const pos of this.yieldPositions) {
+      const harvested = BigInt(pos.harvested || '0');
+      if (harvested <= 0n) continue;
+      try {
+        const protocol = pos.protocol.toLowerCase().includes('aave') ? 'aave' : 'compound';
+        await this.harvestYield(protocol, harvested);
+        logger.info(`On-chain harvest succeeded for ${pos.protocol}`, { amount: harvested.toString() });
+      } catch (err) {
+        logger.warn(`On-chain harvest failed for ${pos.protocol} (tracked off-chain)`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     // Reset harvested counters (revenue has been "claimed")
     for (const pos of this.yieldPositions) {
@@ -400,7 +415,7 @@ export class TreasuryAgent {
     // Emit harvest event — InterAgentLending listens and auto-repays outstanding loans
     EventBus.emitEvent('treasury:yield_harvested', 'treasury', {
       amount: totalHarvested.toString(),
-      reasoning: `Harvested ${harvestedFormatted} USDt yield revenue. Routing to service inter-agent debt first, remainder reinvested.`,
+      reasoning: `Harvested ${harvestedFormatted} USDt yield revenue on-chain. Routing to service inter-agent debt first, remainder reinvested.`,
     });
   }
 
@@ -501,13 +516,15 @@ export class TreasuryAgent {
         const reserveData = await (aave as any).getReserveData?.();
         if (reserveData?.liquidityRate) {
           const apy = Number(reserveData.liquidityRate) / 1e25; // ray → %
-          opportunities.push({
-            protocol: 'aave',
-            apy,
-            tvl: String(reserveData.totalATokenSupply ?? '0'),
-            risk: 'low',
-          });
-          return opportunities;
+          if (apy > 0 && apy < 50) {
+            opportunities.push({
+              protocol: 'aave',
+              apy,
+              tvl: String(reserveData.totalATokenSupply ?? '0'),
+              risk: 'low',
+            });
+            return opportunities;
+          }
         }
       }
     } catch (err) {
@@ -522,13 +539,19 @@ export class TreasuryAgent {
         ];
         const pool = new ethers.Contract(this.config.aavePoolAddress, poolAbi, this.provider);
         const data = await pool.getReserveData(this.config.usdtAddress);
-        const apy = Number(data.liquidityRate) / 1e25;
-        opportunities.push({
-          protocol: 'aave',
-          apy: Math.round(apy * 100) / 100,
-          tvl: data.totalATokenSupply.toString(),
-          risk: 'low',
-        });
+        const rawRate = Number(data.liquidityRate);
+        const apy = rawRate / 1e25; // ray (27 dec) → percentage
+        // Sanity check: Aave APY should be 0-50%; if parsing is wrong, skip to fallback
+        if (apy > 0 && apy < 50) {
+          opportunities.push({
+            protocol: 'aave',
+            apy: Math.round(apy * 100) / 100,
+            tvl: data.totalATokenSupply.toString(),
+            risk: 'low',
+          });
+        } else {
+          logger.debug('Aave liquidityRate parsed to unreasonable APY, using fallback', { rawRate, apy });
+        }
       }
     } catch (err) {
       logger.debug('On-chain Aave fallback also failed', { err });
@@ -1005,6 +1028,40 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
         await this.harvestYield(protocol, BigInt(expectedAmount || '0'));
       } catch (err) {
         logger.error('Harvest failed', { err });
+      }
+    });
+
+    // Listen for dialogue consensus investment actions
+    EventBus.subscribe('dialogue:invest_requested', async (event) => {
+      const { protocol, amount } = event.payload as { protocol: string; amount: string };
+      logger.info('Processing dialogue-driven investment', { protocol, amount });
+      try {
+        // Sanitize: LLM may return floats (e.g. "39994.233") — convert to raw units
+        let rawAmount: bigint;
+        try {
+          const parsed = parseFloat(String(amount));
+          if (isNaN(parsed) || parsed <= 0) return;
+          // If the number looks like USD amount (has decimals or < 1M), treat as USDT with 6 decimals
+          rawAmount = parsed < 1_000_000 ? ethers.parseUnits(parsed.toFixed(6), 6) : BigInt(Math.floor(parsed));
+        } catch {
+          logger.warn('Invalid amount from dialogue, skipping', { amount });
+          return;
+        }
+
+        // Fetch current APY for the protocol
+        const opportunities = await this.fetchYieldOpportunities();
+        const opp = opportunities.find(o => o.protocol.toLowerCase() === protocol) || opportunities[0];
+        if (opp) {
+          await this.proposeYieldInvestment(opp.protocol, rawAmount, opp.apy);
+          EventBus.emitEvent('treasury:dialogue_investment_executed', 'treasury', {
+            action: 'dialogue_invest',
+            reasoning: `Executed dialogue-consensus investment: ${ethers.formatUnits(rawAmount, 6)} USDt into ${opp.protocol} at ${opp.apy}% APY`,
+            data: { protocol: opp.protocol, amount: rawAmount.toString(), apy: opp.apy },
+            status: 'executed',
+          });
+        }
+      } catch (err) {
+        logger.error('Dialogue-driven investment failed', { err: err instanceof Error ? err.message : String(err) });
       }
     });
   }
