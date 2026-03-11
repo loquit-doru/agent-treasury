@@ -6,10 +6,15 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+interface IPool {
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
+    function withdraw(address asset, uint256 amount, address to) external returns (uint256);
+}
+
 /**
  * @title TreasuryVault
  * @dev Multi-sig treasury vault for DAOs with timelock and daily limits
- * Integrates with Aave/Compound for yield generation
+ * Integrates with Aave V3 for yield generation
  */
 contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
     
@@ -26,6 +31,8 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
     
     // State
     IERC20 public usdt;
+    IPool public aavePool;
+    uint256 public totalInvested;
     
     struct Transaction {
         address to;
@@ -77,9 +84,12 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
         _;
     }
     
-    constructor(address _usdt) {
+    constructor(address _usdt, address _aavePool) {
         require(_usdt != address(0), "TreasuryVault: invalid USDT address");
         usdt = IERC20(_usdt);
+        if (_aavePool != address(0)) {
+            aavePool = IPool(_aavePool);
+        }
         
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(AGENT_ROLE, msg.sender);
@@ -214,39 +224,48 @@ contract TreasuryVault is ReentrancyGuard, AccessControl, Pausable {
     }
     
     /**
-     * @dev Invest in yield protocol (Aave/Compound)
+     * @dev Invest USDt into Aave V3 (supply)
      */
     function investInYield(
         address protocol,
         uint256 amount,
         uint256 apy
     ) external onlyAgent nonReentrant whenNotPaused {
-        require(allowedProtocols[protocol], "TreasuryVault: protocol not allowed");
+        require(address(aavePool) != address(0), "TreasuryVault: Aave pool not set");
         require(amount > 0, "TreasuryVault: amount must be > 0");
         require(
             usdt.balanceOf(address(this)) >= amount,
             "TreasuryVault: insufficient balance"
         );
         
-        // Transfer to protocol (simplified - actual integration would use protocol's interface)
-        bool success = usdt.transfer(protocol, amount);
-        require(success, "TreasuryVault: investment failed");
+        // Approve Aave pool to spend USDT
+        usdt.approve(address(aavePool), amount);
+        // Supply to Aave V3
+        aavePool.supply(address(usdt), amount, address(this), 0);
+        totalInvested += amount;
         
         emit YieldInvested(protocol, amount, apy);
     }
     
     /**
-     * @dev Harvest yield from protocol
+     * @dev Withdraw USDt from Aave V3
      */
     function harvestYield(
         address protocol,
         uint256 expectedAmount
     ) external onlyAgent nonReentrant whenNotPaused {
-        require(allowedProtocols[protocol], "TreasuryVault: protocol not allowed");
+        require(address(aavePool) != address(0), "TreasuryVault: Aave pool not set");
         
-        // In real implementation, this would call protocol's harvest function
-        // For now, we just emit event
-        emit YieldHarvested(protocol, expectedAmount);
+        uint256 before = usdt.balanceOf(address(this));
+        aavePool.withdraw(address(usdt), expectedAmount, address(this));
+        uint256 received = usdt.balanceOf(address(this)) - before;
+        if (totalInvested > received) {
+            totalInvested -= received;
+        } else {
+            totalInvested = 0;
+        }
+        
+        emit YieldHarvested(protocol, received);
     }
     
     /**

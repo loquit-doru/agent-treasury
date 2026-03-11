@@ -10,11 +10,12 @@ contract Deploy is Script {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address usdt = vm.envAddress("USDT_ADDRESS");
         address agentAddress = vm.envAddress("AGENT_ADDRESS");
+        address aavePool = vm.envAddress("AAVE_POOL_ADDRESS");
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Deploy TreasuryVault
-        TreasuryVault vault = new TreasuryVault(usdt);
+        // 1. Deploy TreasuryVault with Aave V3 pool
+        TreasuryVault vault = new TreasuryVault(usdt, aavePool);
 
         // 2. Deploy CreditLine (linked to vault)
         CreditLine credit = new CreditLine(usdt, address(vault));

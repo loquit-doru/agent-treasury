@@ -29,8 +29,8 @@ contract DeployLocal is Script {
         usdt.mint(deployer, 1_000_000e6);
         usdt.mint(agentAddress, 100_000e6);
 
-        // 2. Deploy TreasuryVault
-        TreasuryVault vault = new TreasuryVault(address(usdt));
+        // 2. Deploy TreasuryVault (no Aave locally)
+        TreasuryVault vault = new TreasuryVault(address(usdt), address(0));
 
         // 3. Deploy CreditLine (linked to vault)
         CreditLine credit = new CreditLine(address(usdt), address(vault));

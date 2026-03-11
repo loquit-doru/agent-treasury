@@ -35,8 +35,8 @@ contract DeploySepolia is Script {
         // 2. Mint USDt — 200k to deployer
         usdt.mint(deployer, 200_000e6);
 
-        // 3. Deploy TreasuryVault
-        TreasuryVault vault = new TreasuryVault(address(usdt));
+        // 3. Deploy TreasuryVault (no Aave on Sepolia)
+        TreasuryVault vault = new TreasuryVault(address(usdt), address(0));
         console.log("TreasuryVault deployed:", address(vault));
 
         // 4. Deploy CreditLine (linked to vault)

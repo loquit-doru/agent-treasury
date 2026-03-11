@@ -12,6 +12,7 @@
 
 import EventBus from '../orchestrator/EventBus';
 import logger from '../utils/logger';
+import { saveInterAgentLoans, loadInterAgentLoans } from './StatePersistence';
 
 export interface InterAgentLoan {
   id: string;
@@ -74,6 +75,17 @@ export class InterAgentLending {
     getCreditPoolOutstanding: () => bigint;
   }) {
     this.getters = deps;
+
+    // Restore persisted loans
+    const persisted = loadInterAgentLoans();
+    if (persisted && Array.isArray(persisted.loans)) {
+      this.loans = persisted.loans as InterAgentLoan[];
+      logger.info('Restored inter-agent loans from disk', {
+        count: this.loans.length,
+        savedAt: new Date(persisted.savedAt).toISOString(),
+      });
+    }
+
     this.setupListeners();
     logger.info('InterAgentLending module initialized');
   }
@@ -115,6 +127,7 @@ export class InterAgentLending {
     }
 
     this.loans.push(loan);
+    saveInterAgentLoans(this.loans);
 
     // Emit the response so both agents see it
     EventBus.emitEvent(
@@ -148,6 +161,7 @@ export class InterAgentLending {
     if (!loan || loan.status !== 'allocated') return false;
 
     loan.status = 'repaid';
+    saveInterAgentLoans(this.loans);
     EventBus.emitEvent('credit:capital_repaid', 'credit', {
       loanId,
       amount: loan.amount,
@@ -190,6 +204,7 @@ export class InterAgentLending {
     }
 
     if (repaidIds.length > 0) {
+      saveInterAgentLoans(this.loans);
       EventBus.emitEvent('treasury:debt_serviced', 'treasury', {
         repaidLoans: repaidIds,
         totalRepaid: totalRepaid.toString(),

@@ -18,7 +18,7 @@ contract TreasuryVaultTest is Test {
 
     function setUp() public {
         usdt = new MockERC20();
-        vault = new TreasuryVault(address(usdt));
+        vault = new TreasuryVault(address(usdt), address(0));
 
         // Grant roles
         vault.grantRole(vault.AGENT_ROLE(), agent);
@@ -157,24 +157,19 @@ contract TreasuryVaultTest is Test {
 
     // ── Yield Investment ──────────────────────────────────
 
-    function test_invest_in_yield() public {
+    function test_invest_no_pool_reverts() public {
         vm.prank(user);
         vault.deposit(5000e6);
 
         vm.prank(agent);
-        vault.investInYield(protocol, 1000e6, 500); // 5% APY
-
-        assertEq(vault.getBalance(), 4000e6);
-        assertEq(usdt.balanceOf(protocol), 1000e6);
+        vm.expectRevert("TreasuryVault: Aave pool not set");
+        vault.investInYield(protocol, 1000e6, 500);
     }
 
-    function test_invest_disallowed_protocol_reverts() public {
-        vm.prank(user);
-        vault.deposit(5000e6);
-
+    function test_harvest_no_pool_reverts() public {
         vm.prank(agent);
-        vm.expectRevert("TreasuryVault: protocol not allowed");
-        vault.investInYield(address(0xBEEF), 1000e6, 500);
+        vm.expectRevert("TreasuryVault: Aave pool not set");
+        vault.harvestYield(protocol, 1000e6);
     }
 
     // ── Access Control ────────────────────────────────────

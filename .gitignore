@@ -65,8 +65,5 @@ dashboard_dump.json
 # Runtime state
 .state/
 .state_backfill/
-
-# Media / demo recordings
-*.mp4
-*.webm
-*.jpg
+backend/data/
+S6As3.jpg

@@ -4,16 +4,28 @@
 
 import { EventEmitter } from 'events';
 import { AgentEvent, EventHandler, AgentType } from '../types';
+import { saveEvents, loadEvents } from '../services/StatePersistence';
 import logger from '../utils/logger';
 
 class EventBus extends EventEmitter {
   private static instance: EventBus;
   private decisionLog: AgentEvent[] = [];
   private readonly maxLogSize: number = 1000;
+  private saveTimer: NodeJS.Timeout | null = null;
 
   private constructor() {
     super();
     this.setMaxListeners(50);
+
+    // Restore persisted events
+    const persisted = loadEvents();
+    if (persisted && Array.isArray(persisted.events)) {
+      this.decisionLog = persisted.events as AgentEvent[];
+      logger.info('Restored EventBus log from disk', {
+        events: this.decisionLog.length,
+        savedAt: new Date(persisted.savedAt).toISOString(),
+      });
+    }
   }
 
   static getInstance(): EventBus {
@@ -36,6 +48,14 @@ class EventBus extends EventEmitter {
     // Emit to listeners
     this.emit(event.type, event);
     this.emit('*', event); // Wildcard listener
+
+    // Throttled persist (max once per 10s to avoid disk thrashing)
+    if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => {
+        saveEvents(this.decisionLog);
+        this.saveTimer = null;
+      }, 10_000);
+    }
 
     logger.debug(`Event published: ${event.type} from ${event.source}`);
   }

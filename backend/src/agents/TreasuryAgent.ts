@@ -19,6 +19,7 @@ import {
   RiskAssessment,
   RiskFactor,
 } from '../types';
+import { saveTreasuryState, loadTreasuryState } from '../services/StatePersistence';
 
 // LLM Configuration
 const TREASURY_SYSTEM_PROMPT = `You are the Treasury Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -136,12 +137,19 @@ export class TreasuryAgent {
     logger.info('TreasuryAgent starting...');
     this.status = 'active';
 
-    // Seed initial yield positions so dashboard shows data from the start
-    // Seed initial yield positions for deterministic demo reproducibility.
-    // In production, these would be populated from real Aave/Compound interactions.
-    // The agent decision logic (evaluateYieldOpportunities, harvestAndServiceDebt)
-    // is fully functional — only the data source is seeded for testnet stability.
-    if (this.yieldPositions.length === 0) {
+    // Restore persisted state if available, otherwise seed defaults
+    const persisted = loadTreasuryState();
+    if (persisted) {
+      this.yieldPositions = persisted.yieldPositions;
+      this.historySnapshots = persisted.historySnapshots;
+      this.decisionMemory = persisted.decisionMemory;
+      logger.info('Restored TreasuryAgent state from disk', {
+        yieldPositions: this.yieldPositions.length,
+        historySnapshots: this.historySnapshots.length,
+        decisions: this.decisionMemory.length,
+        savedAt: new Date(persisted.savedAt).toISOString(),
+      });
+    } else if (this.yieldPositions.length === 0) {
       const now = Date.now();
       this.yieldPositions.push(
         { protocol: 'Aave V3',     amount: String(ethers.parseUnits('5000', 6)), apy: 4.2, investedAt: now - 3 * 86400_000, harvested: '0' },
@@ -181,6 +189,13 @@ export class TreasuryAgent {
     if (this.monitoringInterval) {
       clearInterval(this.monitoringInterval);
     }
+
+    // Final save before shutdown
+    saveTreasuryState({
+      yieldPositions: this.yieldPositions,
+      historySnapshots: this.historySnapshots,
+      decisionMemory: this.decisionMemory,
+    });
 
     EventBus.emitEvent('agent:stopped', 'treasury', {});
     logger.info('TreasuryAgent stopped');
@@ -348,6 +363,13 @@ export class TreasuryAgent {
       if (this.monitorCycleCount % 10 === 0) {
         this.harvestAndServiceDebt();
       }
+
+      // Persist state to disk every cycle
+      saveTreasuryState({
+        yieldPositions: this.yieldPositions,
+        historySnapshots: this.historySnapshots,
+        decisionMemory: this.decisionMemory,
+      });
     } catch (error) {
       logger.error('Monitor loop error', { error });
       this.status = 'error';

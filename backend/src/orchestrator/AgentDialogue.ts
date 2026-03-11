@@ -15,6 +15,7 @@ import type { CreditAgent } from '../agents/CreditAgent';
 import type { RiskAgent } from '../agents/RiskAgent';
 import type { AgentConfig } from '../types';
 import { ethers } from 'ethers';
+import { saveDialogues, loadDialogues } from '../services/StatePersistence';
 
 // Dialogue topics rotate each cycle
 const DIALOGUE_TOPICS = [
@@ -80,6 +81,17 @@ export class AgentDialogue {
     this.creditAgent = creditAgent;
     this.riskAgent = riskAgent || null;
     this.llm = llmClient;
+
+    // Restore persisted dialogues
+    const persisted = loadDialogues();
+    if (persisted && Array.isArray(persisted.dialogues)) {
+      this.recentDialogues = persisted.dialogues as DialogueRound[];
+      this.roundCount = persisted.roundCount || 0;
+      logger.info('Restored AgentDialogue from disk', {
+        dialogues: this.recentDialogues.length,
+        roundCount: this.roundCount,
+      });
+    }
   }
 
   /**
@@ -111,6 +123,7 @@ export class AgentDialogue {
       clearInterval(this.dialogueInterval);
       this.dialogueInterval = null;
     }
+    saveDialogues(this.recentDialogues, this.roundCount);
     logger.info('AgentDialogue orchestrator stopped');
   }
 
@@ -207,6 +220,9 @@ export class AgentDialogue {
     if (this.recentDialogues.length > this.maxHistory) {
       this.recentDialogues.shift();
     }
+
+    // Persist dialogues
+    saveDialogues(this.recentDialogues, this.roundCount);
 
     // Emit consensus as a special event
     EventBus.emitEvent('dialogue:consensus', 'treasury', {

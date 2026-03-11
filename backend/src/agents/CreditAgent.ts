@@ -18,6 +18,7 @@ import {
   AgentConfig,
   CreditTier,
 } from '../types';
+import { saveCreditState, loadCreditState } from '../services/StatePersistence';
 
 // LLM Configuration
 const CREDIT_SYSTEM_PROMPT = `You are the Credit Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -138,7 +139,25 @@ export class CreditAgent {
     logger.info('CreditAgent starting...');
     this.status = 'active';
 
-    // Sync existing data
+    // Restore persisted state if available
+    const persisted = loadCreditState();
+    if (persisted) {
+      for (const [key, val] of persisted.profiles) {
+        this.profiles.set(key, val as unknown as CreditProfile);
+      }
+      for (const [id, val] of persisted.loans) {
+        this.loans.set(id, val as unknown as Loan);
+      }
+      this.decisionMemory = persisted.decisionMemory;
+      logger.info('Restored CreditAgent state from disk', {
+        profiles: this.profiles.size,
+        loans: this.loans.size,
+        decisions: this.decisionMemory.length,
+        savedAt: new Date(persisted.savedAt).toISOString(),
+      });
+    }
+
+    // Sync existing data (merges on-chain state)
     await this.syncLoans();
 
     // Start monitoring loop
@@ -164,6 +183,13 @@ export class CreditAgent {
     if (this.monitoringInterval) {
       clearInterval(this.monitoringInterval);
     }
+
+    // Final save before shutdown
+    saveCreditState({
+      profiles: Array.from(this.profiles.entries()),
+      loans: Array.from(this.loans.entries()),
+      decisionMemory: this.decisionMemory,
+    });
 
     EventBus.emitEvent('agent:stopped', 'credit', {});
     logger.info('CreditAgent stopped');
@@ -191,6 +217,13 @@ export class CreditAgent {
 
       // Active portfolio monitoring — emit decision events
       await this.monitorPortfolio();
+
+      // Persist state to disk
+      saveCreditState({
+        profiles: Array.from(this.profiles.entries()),
+        loans: Array.from(this.loans.entries()),
+        decisionMemory: this.decisionMemory,
+      });
     } catch (error) {
       logger.error('Monitor loop error', { error });
       this.status = 'error';
