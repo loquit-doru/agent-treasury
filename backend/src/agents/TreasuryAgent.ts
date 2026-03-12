@@ -485,25 +485,26 @@ export class TreasuryAgent {
   }
 
   /**
-   * Fetch yield opportunities — tries WDK Aave lending first, falls back gracefully.
+   * Fetch yield opportunities — tries WDK Aave lending first, then on-chain Aave V3.
    */
   async fetchYieldOpportunities(): Promise<YieldOpportunity[]> {
     const opportunities: YieldOpportunity[] = [];
 
+    // 1. Try WDK Aave lending protocol (uses registered @tetherto/wdk-protocol-lending-aave-evm)
     try {
       const aave = getAaveLending(this.wdkAccount);
       if (aave) {
-        // Attempt to read real reserve data via WDK lending protocol
-        const reserveData = await (aave as any).getReserveData?.();
-        if (reserveData?.liquidityRate) {
-          const apy = Number(reserveData.liquidityRate) / 1e25; // ray → %
+        const accountData = await (aave as any).getAccountData?.();
+        if (accountData) {
+          logger.info('WDK Aave accountData retrieved', { accountData });
+        }
+        // Try supply APY via WDK
+        const reserveData = await (aave as any).getReserveData?.(this.config.usdtAddress);
+        if (reserveData?.currentLiquidityRate) {
+          const apy = Number(reserveData.currentLiquidityRate) / 1e25; // ray → %
           if (apy > 0 && apy < 50) {
-            opportunities.push({
-              protocol: 'aave',
-              apy,
-              tvl: String(reserveData.totalATokenSupply ?? '0'),
-              risk: 'low',
-            });
+            opportunities.push({ protocol: 'aave', apy, tvl: '0', risk: 'low' });
+            logger.info('WDK Aave yield data', { apy });
             return opportunities;
           }
         }
@@ -512,37 +513,55 @@ export class TreasuryAgent {
       logger.debug('WDK Aave data unavailable, using on-chain fallback', { err });
     }
 
-    // Fallback: query Aave pool contract directly
+    // 2. On-chain Aave V3 Pool — correct ABI for getReserveData (returns full struct)
     try {
       if (this.config.aavePoolAddress) {
         const poolAbi = [
-          'function getReserveData(address asset) view returns (tuple(uint256 liquidityRate, uint128 totalATokenSupply) data)',
+          `function getReserveData(address asset) view returns (
+            tuple(
+              uint256 configuration,
+              uint128 liquidityIndex,
+              uint128 currentLiquidityRate,
+              uint128 variableBorrowIndex,
+              uint128 currentVariableBorrowRate,
+              uint128 currentStableBorrowRate,
+              uint40 lastUpdateTimestamp,
+              uint16 id,
+              address aTokenAddress,
+              address stableDebtTokenAddress,
+              address variableDebtTokenAddress,
+              address interestRateStrategyAddress,
+              uint128 accruedToTreasury,
+              uint128 unbacked,
+              uint128 isolationModeTotalDebt
+            ) data
+          )`,
         ];
         const pool = new ethers.Contract(this.config.aavePoolAddress, poolAbi, this.provider);
         const data = await pool.getReserveData(this.config.usdtAddress);
-        const rawRate = Number(data.liquidityRate);
+        const rawRate = Number(data.currentLiquidityRate);
         const apy = rawRate / 1e25; // ray (27 dec) → percentage
-        // Sanity check: Aave APY should be 0-50%; if parsing is wrong, skip to fallback
         if (apy > 0 && apy < 50) {
           opportunities.push({
             protocol: 'aave',
             apy: Math.round(apy * 100) / 100,
-            tvl: data.totalATokenSupply.toString(),
+            tvl: '0',
             risk: 'low',
           });
+          logger.info('Aave V3 on-chain yield data', { rawRate, apy: opportunities[0].apy });
         } else {
-          logger.debug('Aave liquidityRate parsed to unreasonable APY, using fallback', { rawRate, apy });
+          logger.debug('Aave liquidityRate parsed to unreasonable APY', { rawRate, apy });
         }
       }
     } catch (err) {
-      logger.debug('On-chain Aave fallback also failed', { err });
+      logger.debug('On-chain Aave V3 query failed', { err });
     }
 
-    // Deterministic fallback for local dev / when no Aave pool available
+    // 3. Deterministic fallback (last resort)
     if (opportunities.length === 0) {
+      logger.debug('Using deterministic yield fallback — no live data available');
       opportunities.push(
         { protocol: 'aave', apy: 4.2, tvl: '1200000000', risk: 'low' },
-        { protocol: 'compound', apy: 3.8, tvl: '800000000', risk: 'low' },
       );
     }
 
@@ -642,20 +661,41 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
         });
       }
 
-      // Attempt on-chain TX (fire-and-forget — position is already tracked)
+      // Attempt on-chain TX — try WDK Aave supply first, then vault investInYield
       let hash: string | undefined;
+
+      // Primary: WDK Aave lending supply (real DeFi interaction)
       try {
-        const protocolAddress = this.getProtocolAddress(protocol);
-        const data = VAULT_IFACE.encodeFunctionData('investInYield', [
-          protocolAddress,
-          amount,
-          Math.floor(apy * 100),
-        ]);
-        hash = await this.sendTx(this.config.treasuryVaultAddress, data, `investInYield(${protocol})`);
-      } catch (txErr) {
-        logger.warn('On-chain investInYield reverted (position tracked off-chain)', {
-          protocol, error: txErr instanceof Error ? txErr.message : String(txErr),
+        const aave = getAaveLending(this.wdkAccount);
+        if (aave) {
+          const supplyResult = await (aave as any).supply({
+            token: this.config.usdtAddress,
+            amount,
+          });
+          hash = supplyResult?.hash ?? supplyResult;
+          logger.info('WDK Aave supply succeeded', { protocol, amount: amount.toString(), hash });
+        }
+      } catch (aaveErr) {
+        logger.warn('WDK Aave supply failed, falling back to vault investInYield', {
+          error: aaveErr instanceof Error ? aaveErr.message : String(aaveErr),
         });
+      }
+
+      // Fallback: vault investInYield contract call
+      if (!hash) {
+        try {
+          const protocolAddress = this.getProtocolAddress(protocol);
+          const data = VAULT_IFACE.encodeFunctionData('investInYield', [
+            protocolAddress,
+            amount,
+            Math.floor(apy * 100),
+          ]);
+          hash = await this.sendTx(this.config.treasuryVaultAddress, data, `investInYield(${protocol})`);
+        } catch (txErr) {
+          logger.warn('On-chain investInYield reverted (position tracked off-chain)', {
+            protocol, error: txErr instanceof Error ? txErr.message : String(txErr),
+          });
+        }
       }
 
       const decision: AgentDecision = {

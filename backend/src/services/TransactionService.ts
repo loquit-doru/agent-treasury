@@ -1,7 +1,7 @@
 /**
  * Shared write-transaction helper used by both TreasuryAgent and CreditAgent.
- * Primary path: ethers Wallet (holds AGENT_ROLE on contracts).
- * Fallback: WDK account (may derive a different address).
+ * Primary path: WDK account (Tether WDK — both addresses now have AGENT_ROLE).
+ * Fallback: ethers Wallet (deployer key).
  */
 
 import { ethers } from 'ethers';
@@ -15,25 +15,27 @@ export async function sendWriteTx(
   data: string,
   label: string,
 ): Promise<string> {
-  // Primary path: ethers Wallet (the address that has AGENT_ROLE on contracts)
-  if (privateKey) {
-    try {
-      const signer = new ethers.Wallet(privateKey, provider as ethers.JsonRpcProvider);
-      const tx = await signer.sendTransaction({ to, data });
-      const receipt = await tx.wait();
-      const hash = receipt!.hash;
-      logger.info(`[ethers] ${label} succeeded`, { hash });
-      return hash;
-    } catch (ethersErr) {
-      logger.warn(`[ethers] ${label} failed, falling back to WDK`, {
-        error: ethersErr instanceof Error ? ethersErr.message : String(ethersErr),
-      });
-    }
+  // Primary path: WDK (Tether Wallet Development Kit — the hackathon SDK)
+  try {
+    const result = await wdkAccount.sendTransaction({ to, value: '0', data });
+    const hash: string = result.hash ?? result;
+    logger.info(`[WDK] ${label} succeeded`, { hash });
+    return hash;
+  } catch (wdkErr) {
+    logger.warn(`[WDK] ${label} failed, falling back to ethers`, {
+      error: wdkErr instanceof Error ? wdkErr.message : String(wdkErr),
+    });
   }
 
-  // Fallback: WDK
-  const result = await wdkAccount.sendTransaction({ to, value: '0', data });
-  const hash: string = result.hash ?? result;
-  logger.info(`[WDK] ${label} succeeded`, { hash });
-  return hash;
+  // Fallback: ethers Wallet (deployer key)
+  if (privateKey) {
+    const signer = new ethers.Wallet(privateKey, provider as ethers.JsonRpcProvider);
+    const tx = await signer.sendTransaction({ to, data });
+    const receipt = await tx.wait();
+    const hash = receipt!.hash;
+    logger.info(`[ethers-fallback] ${label} succeeded`, { hash });
+    return hash;
+  }
+
+  throw new Error(`${label}: both WDK and ethers failed`);
 }

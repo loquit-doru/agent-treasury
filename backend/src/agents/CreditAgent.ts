@@ -20,6 +20,7 @@ import {
 } from '../types';
 import { saveCreditState, loadCreditState } from '../services/StatePersistence';
 import { sendWriteTx } from '../services/TransactionService';
+import { generateProof, verifyProof, getBestProvableTier } from '../services/ZKCreditProof';
 
 // LLM Configuration
 const CREDIT_SYSTEM_PROMPT = `You are the Credit Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -649,6 +650,25 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
       return { approved: false, durationDays: 0, rateBps: 0, reasoning, mlPrediction };
     }
 
+    // ZK Credit Proof — prove score meets tier threshold without revealing exact score
+    let zkVerified = false;
+    let zkTierName = 'Unknown';
+    const bestTier = getBestProvableTier(profile.score);
+    if (bestTier) {
+      const result = generateProof(profile.score, bestTier.threshold, bestTier.tierName);
+      if (result) {
+        const verification = verifyProof(result.proof);
+        zkVerified = verification.valid;
+        zkTierName = verification.tierName;
+        logger.info('ZK credit proof verified', {
+          address, tierName: zkTierName, valid: zkVerified, reason: verification.reason,
+        });
+        EventBus.emitEvent('credit:zk_proof_verified', 'credit', {
+          address, tierName: zkTierName, threshold: bestTier.threshold, valid: zkVerified,
+        });
+      }
+    }
+
     try {
       const utilizationPct = BigInt(profile.limit) > 0n
         ? Number((BigInt(profile.borrowed) * 100n) / BigInt(profile.limit))
@@ -673,6 +693,8 @@ ML Default Prediction:
 - Risk bucket: ${mlPrediction.riskBucket}
 - Confidence: ${(mlPrediction.confidence * 100).toFixed(0)}%
 - Top risk factor: ${mlPrediction.featureImportance[0]?.feature ?? 'N/A'} (contribution: ${mlPrediction.featureImportance[0]?.contribution ?? 0})
+
+ZK Credit Proof: ${zkVerified ? `VERIFIED — tier "${zkTierName}"` : 'NOT VERIFIED'}
 
 Term Negotiation Rules:
 - Excellent borrowers (score 800+): offer 7-60 day terms, consider rate discounts up to 2%
@@ -702,11 +724,12 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       const rateBps = Math.max(100, Math.min(2500, Number(json.rateBps) || defaultRate));
 
       const reasoning = json.reasoning || `${approved ? 'Approved' : 'Declined'} ${ethers.formatUnits(amount, 6)} USDt — ${durationDays}d at ${rateBps / 100}%`;
+      const zkSuffix = zkVerified ? ` [ZK: ${zkTierName} tier verified]` : '';
       this.remember(
         approved ? 'borrow_approved' : 'borrow_declined',
-        reasoning,
+        reasoning + zkSuffix,
       );
-      return { approved, durationDays, rateBps, reasoning, mlPrediction };
+      return { approved, durationDays, rateBps, reasoning: reasoning + zkSuffix, mlPrediction };
     } catch (error) {
       logger.error('LLM borrow evaluation error', { error });
       // Deterministic fallback: approve if within available credit, negotiate based on score
@@ -722,11 +745,12 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       }
 
       const reasoning = `[deterministic] ${approved ? 'Approved' : 'Declined'}: ${approved ? 'within' : 'exceeds'} available credit — ${durationDays}d at ${rateBps / 100}%`;
+      const zkSuffix = zkVerified ? ` [ZK: ${zkTierName} tier verified]` : '';
       this.remember(
         approved ? 'borrow_approved' : 'borrow_declined',
-        reasoning,
+        reasoning + zkSuffix,
       );
-      return { approved, durationDays, rateBps, reasoning, mlPrediction };
+      return { approved, durationDays, rateBps, reasoning: reasoning + zkSuffix, mlPrediction };
     }
   }
 
