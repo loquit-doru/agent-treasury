@@ -152,16 +152,15 @@ async function initializeAgents(): Promise<void> {
 
     const wdkAccount = await getAccount(wdk);
 
-    // Detect WDK ↔ ethers address mismatch
+    // Detect WDK ↔ ethers address mismatch (informational — both have AGENT_ROLE)
     const wdkAddr = await getWdkAddress(wdk);
     if (config.privateKey) {
       const ethersAddr = new ethers.Wallet(config.privateKey).address;
       if (wdkAddr.toLowerCase() !== ethersAddr.toLowerCase()) {
-        logger.warn(
+        logger.info(
           `WDK address (${wdkAddr}) ≠ DEPLOYER_PRIVATE_KEY address (${ethersAddr}). ` +
-          `ethers signer will be used for writes (has AGENT_ROLE on contracts). ` +
-          `To fix: generate a WDK seed that derives ${ethersAddr}, ` +
-          `or grant AGENT_ROLE to ${wdkAddr} on-chain.`
+          `WDK is primary signer (has AGENT_ROLE on both contracts). ` +
+          `ethers Wallet is fallback signer.`
         );
       }
     }

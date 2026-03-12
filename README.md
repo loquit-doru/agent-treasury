@@ -6,6 +6,56 @@ Built for **Tether Hackathon Galáctica: WDK Edition 1** (March 2–22, 2026)
 
 > **Tracks**: 🏦 Lending Bot · 🤖 Agent Wallets · 🌊 Autonomous DeFi Agent
 
+---
+
+### 🔴 Live Deployment (Arbitrum One Mainnet)
+
+| Resource | URL / Address |
+|----------|---------------|
+| **Dashboard** | https://agent-treasury.pages.dev |
+| **API** | https://treasury.proceedgate.dev |
+| **TreasuryVault** | [`0x5503e9d53592B7D896E135804637C1710bDD5A64`](https://arbiscan.io/address/0x5503e9d53592B7D896E135804637C1710bDD5A64) |
+| **CreditLine** | [`0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0`](https://arbiscan.io/address/0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0) |
+| **USDt (Arbitrum)** | [`0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`](https://arbiscan.io/address/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9) |
+| **Aave V3 Pool** | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` |
+| **WDK Wallet** | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` (AGENT_ROLE on both contracts) |
+| **Deployer** | `0xE9a30BCbdE263eBfebB24768a3f9642044a9804c` (DEFAULT_ADMIN_ROLE) |
+
+### 🧑‍⚖️ For Judges — Quick Evaluation
+
+**1. See it live** — Open the [Dashboard](https://agent-treasury.pages.dev). The Treasury Agent and Credit Agent run autonomously with real USDt on Arbitrum One.
+
+**2. Verify on-chain** — Click the TreasuryVault or CreditLine links above to see real transactions on Arbiscan.
+
+**3. Test the API**:
+```bash
+# Health check
+curl https://treasury.proceedgate.dev/health
+
+# Dashboard data (treasury state, loans, agent decisions)
+curl https://treasury.proceedgate.dev/api/dashboard
+
+# Credit score an address
+curl -X POST https://treasury.proceedgate.dev/api/credit/0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC/evaluate
+
+# ML default prediction
+curl https://treasury.proceedgate.dev/api/credit/0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC/default-prediction
+
+# Generate ZK credit proof
+curl -X POST https://treasury.proceedgate.dev/api/credit/0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC/zk-proof
+```
+
+**4. Run contract tests** (31 Foundry tests):
+```bash
+npm run contracts:test
+```
+
+**5. WDK integration proof**: All write transactions go through WDK as primary signer (`0xf39Fd...`). On-chain AGENT_ROLE grants:
+- Vault: [TX 0xbf99878...](https://arbiscan.io/tx/0xbf99878ac5dcaae548d23a371c4bbbc6e75d9685faa3a562a921dd1d4f084db6)
+- Credit: [TX 0x3b1d9e4...](https://arbiscan.io/tx/0x3b1d9e42b9ea6ac2c01b08905edccb52702399a9c9abbb8dba07443120c2a606)
+
+---
+
 ## What It Does
 
 AgentTreasury is a **2-agent autonomous financial system** that manages a DAO treasury:
@@ -429,7 +479,7 @@ Separation of concerns: the Treasury Agent optimizes yield without worrying abou
 The credit formula (`500 + min(txCount*2, 200) + min(volume/100, 150) + repaidLoans*100 + min(age/10, 50) - defaults*200`) uses only publicly verifiable on-chain data. No off-chain oracles or trusted third parties. The score determines loan tier, amount cap, and interest rate autonomously.
 
 ### Why WDK + ethers.js Dual Approach?
-WDK handles wallet management and Aave lending (via `wdk-protocol-lending-aave-evm`). ethers.js handles direct smart contract reads and custom transactions (credit scoring, loan issuance). This gives us WDK for wallet ops and ethers.js flexibility for custom contracts.
+WDK is the **primary signer** for all write transactions — both Treasury and Credit operations go through WDK first (see `TransactionService.ts`). ethers.js is the **fallback signer** and handles read-only contract queries. The WDK address (`0xf39Fd...`) has `AGENT_ROLE` on both contracts (granted on-chain). This gives us native WDK wallet ops for the hackathon while keeping ethers.js as safety net.
 
 ### Why EventBus Instead of Direct Calls?
 Agents communicate through a pub/sub EventBus rather than direct method calls. This decouples them, enables WebSocket clients to observe all activity, and makes adding new subscribers (analytics, audit log, etc.) trivial.
@@ -437,10 +487,12 @@ Agents communicate through a pub/sub EventBus rather than direct method calls. T
 ## Known Limitations
 
 - **Aave yield may fail on local Anvil fork** — `TreasuryVault: protocol not allowed` if Aave protocol address isn't allowlisted on-chain. Works correctly on Arbitrum One with proper setup.
-- **In-memory state** — Agent decisions and dialogue rounds are stored in memory. A backend restart loses history. Persistent storage (SQLite/Postgres) is a natural next step.
+- **State persistence is file-based** — Agent decisions, dialogue rounds, and credit profiles are persisted to `backend/data/*.json`. Durable across restarts but not suitable for multi-instance deployments. A natural next step would be SQLite or Postgres.
 - **Single-node deployment** — Not designed for horizontal scaling. One backend instance manages both agents.
-- **No WDK for CreditLine contracts** — WDK handles wallet + Aave; custom smart contract interactions (CreditLine) use ethers.js directly since WDK doesn't have a lending-credit protocol module.
-- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt.
+- **WDK address differs from deployer** — WDK derives `0xf39Fd...` while deployer is `0xE9a30...`. Both have `AGENT_ROLE` on-chain. WDK is primary signer, ethers is fallback.
+- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt (16 USDt in vault).
+- **ZK proofs are hash-based** — Uses SHA-256 commitments + Fiat-Shamir, not zk-SNARKs. The verifier learns `delta = score - threshold` (bounding the score range). Full privacy would require Circom + snarkjs.
+- **Groq rate limits** — Free tier has 100K tokens/day. Agents auto-fallback to deterministic logic on 429 errors.
 
 ## License
 
