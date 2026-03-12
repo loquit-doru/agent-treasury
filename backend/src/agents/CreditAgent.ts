@@ -74,7 +74,19 @@ const CREDIT_TIERS: CreditTier[] = [
 const CREDIT_LINE_IFACE = new ethers.Interface(CREDIT_LINE_ABI);
 const ERC20_IFACE = new ethers.Interface([
   'function approve(address spender, uint256 amount) returns (bool)',
+  'function balanceOf(address account) view returns (uint256)',
 ]);
+
+// Penalty rate tiers (annualized basis points, added on top of base interest)
+const PENALTY_TIERS = [
+  { maxOverdueDays: 7, penaltyBps: 500 },   // 5% for 1-7 days overdue
+  { maxOverdueDays: 14, penaltyBps: 1000 },  // 10% for 8-14 days overdue
+  { maxOverdueDays: Infinity, penaltyBps: 1500 }, // 15% for 15+ days overdue
+];
+
+// Idle capital thresholds for autonomous lending
+const IDLE_CAPITAL_THRESHOLD = ethers.parseUnits('500', 6);    // 500 USDt — start proactive lending
+const IDLE_CAPITAL_AGGRESSIVE = ethers.parseUnits('2000', 6);  // 2000 USDt — aggressive lending mode
 
 export class CreditAgent {
   private status: AgentStatus = 'idle';
@@ -532,6 +544,18 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
       this.borrowLocks.add(addrLower);
 
       try {
+      // Check credit freeze — borrower cannot take new loans while frozen
+      if (this.isCreditFrozen(addrLower)) {
+        logger.warn(`Borrow rejected: credit frozen for ${address} due to prior default`);
+        EventBus.emitEvent('credit:borrow_rejected_frozen', 'credit', {
+          action: 'borrow_rejected',
+          reasoning: `Borrow rejected — borrower ${address} has frozen credit due to prior loan default. Must resolve outstanding defaults first.`,
+          data: { address, amount: amount.toString(), reason: 'credit_frozen' },
+          status: 'executed',
+        });
+        return null;
+      }
+
       // Get or evaluate credit profile
       let profile = this.profiles.get(addrLower);
       
@@ -919,8 +943,28 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
 
         const overdueSec = now - loan.dueDate;
         if (overdueSec > 0 && overdueSec <= CreditAgent.GRACE_PERIOD_SECONDS) {
+          // ── Penalty interest accrual ──
+          const overdueDays = Math.ceil(overdueSec / 86400);
+          const penaltyTier = PENALTY_TIERS.find(t => overdueDays <= t.maxOverdueDays) || PENALTY_TIERS[PENALTY_TIERS.length - 1];
+          const penaltyBps = penaltyTier.penaltyBps;
+          loan.penaltyRateBps = penaltyBps;
+
+          // Calculate penalty: principal × penaltyRate × overdueDays / 365
+          const principal = BigInt(loan.principal);
+          const penaltyAmount = (principal * BigInt(penaltyBps) * BigInt(overdueDays)) / (10000n * 365n);
+          loan.penaltyAccrued = penaltyAmount.toString();
+
+          // Incremental credit score reduction: -10 per day overdue (cap at -100 during grace)
+          const profile = this.profiles.get(loan.borrower.toLowerCase());
+          if (profile) {
+            const scoreReduction = Math.min(overdueDays * 10, 100);
+            const baseScore = this.calculateBaseScore(await this.fetchCreditHistory(loan.borrower));
+            profile.score = Math.max(0, baseScore - scoreReduction);
+            profile.lastUpdated = Date.now();
+          }
+
           // Grace period — attempt autonomous repayment collection, then warn
-          logger.info(`Loan ${loanId} overdue by ${Math.floor(overdueSec / 3600)}h — attempting autonomous collection`);
+          logger.info(`Loan ${loanId} overdue by ${overdueDays}d — penalty ${penaltyBps/100}%, accrued ${ethers.formatUnits(penaltyAmount, 6)} USDt`);
 
           // Autonomous repayment: agent attempts repayFor on-chain
           try {
@@ -964,8 +1008,8 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
 
           EventBus.emitEvent('credit:loan_grace_warning', 'credit', {
             action: 'grace_warning',
-            reasoning: `Loan #${loanId} is ${Math.floor(overdueSec / 3600)}h overdue — auto-collection attempted, grace period expires in ${Math.floor((CreditAgent.GRACE_PERIOD_SECONDS - overdueSec) / 3600)}h`,
-            data: { loanId, borrower: loan.borrower, overdueHours: Math.floor(overdueSec / 3600) },
+            reasoning: `Loan #${loanId} is ${Math.floor(overdueSec / 3600)}h overdue — auto-collection attempted, grace period expires in ${Math.floor((CreditAgent.GRACE_PERIOD_SECONDS - overdueSec) / 3600)}h. Penalty rate: ${penaltyBps / 100}%`,
+            data: { loanId, borrower: loan.borrower, overdueHours: Math.floor(overdueSec / 3600), penaltyBps, penaltyAccrued: ethers.formatUnits(loan.penaltyAccrued || '0', 6) },
             status: 'executed',
           });
         } else if (overdueSec > CreditAgent.GRACE_PERIOD_SECONDS) {
@@ -978,20 +1022,25 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
             logger.error(`Failed to mark loan ${loanId} as defaulted on-chain`, { err: err instanceof Error ? err.message : String(err) });
           }
 
-          // Fix C2 + H6: deactivate locally and update profile
+          // Deactivate locally, freeze borrower credit, update profile
           loan.active = false;
+          loan.creditFrozen = true;
           const profile = this.profiles.get(loan.borrower.toLowerCase());
           if (profile) {
             const borrowed = BigInt(profile.borrowed);
             const principal = BigInt(loan.principal);
             profile.borrowed = (borrowed > principal ? borrowed - principal : 0n).toString();
-            profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
+            // Credit freeze: set available to 0 — borrower cannot take new loans until resolved
+            profile.available = '0';
+            // Credit score penalty: -200 per default (enforced floor at 0)
+            profile.score = Math.max(0, profile.score - 200);
+            profile.lastUpdated = Date.now();
           }
           
           EventBus.emitEvent('credit:loan_defaulted', 'credit', {
             action: 'loan_defaulted',
-            reasoning: `Loan #${loanId} defaulted — borrower ${loan.borrower} failed to repay ${ethers.formatUnits(loan.principal, 6)} USDt within grace period`,
-            data: { loanId, borrower: loan.borrower, amount: loan.principal },
+            reasoning: `Loan #${loanId} defaulted — borrower ${loan.borrower} failed to repay ${ethers.formatUnits(loan.principal, 6)} USDt within grace period. Credit FROZEN, score reduced by 200. Total penalty accrued: ${ethers.formatUnits(loan.penaltyAccrued || '0', 6)} USDt`,
+            data: { loanId, borrower: loan.borrower, amount: loan.principal, penaltyAccrued: loan.penaltyAccrued || '0', creditFrozen: true },
             status: 'executed',
           });
         }
@@ -1192,6 +1241,8 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
   /**
    * Autonomous lending — process pending borrow requests and proactively scan for lending opportunities.
    * This is the core "agent makes lending decisions without human prompts" feature.
+   *
+   * Flow: detect idle capital → search borrowers → evaluate risk → lend
    */
   private async processAutonomousLending(): Promise<void> {
     // 1) Process queued borrow requests (from EventBus, dialogue consensus, etc.)
@@ -1216,12 +1267,43 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       }
     }
 
-    // 2) Proactive scan: check existing profiles with available credit
-    //    If a profile has high score + unused credit and hasn't borrowed recently, consider pre-approved lending
+    // 2) Idle capital detection — read vault USDt balance to determine lending aggressiveness
+    let idleCapital = 0n;
+    let aggressiveMode = false;
+    try {
+      const usdtContract = new ethers.Contract(this.config.usdtAddress, ['function balanceOf(address) view returns (uint256)'], this.provider);
+      const vaultBalance: bigint = await usdtContract.balanceOf(this.config.treasuryVaultAddress);
+      const totalLent = Array.from(this.loans.values())
+        .filter(l => l.active)
+        .reduce((sum, l) => sum + BigInt(l.principal), 0n);
+      idleCapital = vaultBalance > totalLent ? vaultBalance - totalLent : 0n;
+      aggressiveMode = idleCapital >= IDLE_CAPITAL_AGGRESSIVE;
+
+      if (idleCapital >= IDLE_CAPITAL_THRESHOLD) {
+        EventBus.emitEvent('credit:idle_capital_detected', 'credit', {
+          action: 'idle_capital_scan',
+          reasoning: `Detected ${ethers.formatUnits(idleCapital, 6)} USDt idle in treasury — ${aggressiveMode ? 'aggressive' : 'standard'} proactive lending mode activated`,
+          data: { idleCapital: ethers.formatUnits(idleCapital, 6), aggressiveMode },
+          status: 'executed',
+        });
+      }
+    } catch (err) {
+      logger.warn('Failed to read vault balance for idle capital detection', { err: err instanceof Error ? err.message : String(err) });
+    }
+
+    // 3) Proactive scan — lower thresholds when treasury has idle capital
+    const minScore = aggressiveMode ? 600 : (idleCapital >= IDLE_CAPITAL_THRESHOLD ? 650 : 700);
+    let proactiveLoansThisCycle = 0;
+    const maxProactive = aggressiveMode ? 3 : 1;
+
     for (const [addr, profile] of this.profiles) {
+      if (proactiveLoansThisCycle >= maxProactive) break;
+
       const available = BigInt(profile.available);
-      // Only consider profiles with good score and meaningful available credit (> 1 USDt)
-      if (profile.score < 700 || available < ethers.parseUnits('1', 6)) continue;
+      if (profile.score < minScore || available < ethers.parseUnits('1', 6)) continue;
+
+      // Skip borrowers with frozen credit (defaulted)
+      if (this.isCreditFrozen(addr)) continue;
 
       // Check if this borrower already has an active loan — skip to avoid over-extension
       const hasActiveLoan = Array.from(this.loans.values()).some(
@@ -1234,22 +1316,32 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
         const shouldLend = await this.evaluateProactiveLending(addr, profile);
         if (shouldLend.approved) {
           const lendAmount = BigInt(shouldLend.amount);
-          logger.info('Proactive lending opportunity detected', { address: addr, amount: shouldLend.amount });
+          logger.info('Proactive lending opportunity detected', { address: addr, amount: shouldLend.amount, idleCapital: ethers.formatUnits(idleCapital, 6) });
           const loan = await this.processBorrow(addr, lendAmount);
           if (loan) {
+            proactiveLoansThisCycle++;
             EventBus.emitEvent('credit:autonomous_lending', 'credit', {
               action: 'proactive_lending',
-              reasoning: shouldLend.reasoning,
-              data: { loanId: loan.id, address: addr, amount: shouldLend.amount },
+              reasoning: `${shouldLend.reasoning} (idle capital: ${ethers.formatUnits(idleCapital, 6)} USDt)`,
+              data: { loanId: loan.id, address: addr, amount: shouldLend.amount, idleCapital: ethers.formatUnits(idleCapital, 6) },
               status: 'executed',
             });
           }
-          break; // Max 1 proactive loan per cycle
         }
       } catch (err) {
         logger.warn('Proactive lending evaluation failed', { address: addr, err: err instanceof Error ? err.message : String(err) });
       }
     }
+  }
+
+  /**
+   * Check if a borrower's credit is frozen (has a defaulted loan with creditFrozen flag).
+   */
+  private isCreditFrozen(address: string): boolean {
+    const addr = address.toLowerCase();
+    return Array.from(this.loans.values()).some(
+      l => !l.active && l.creditFrozen && l.borrower.toLowerCase() === addr
+    );
   }
 
   /**

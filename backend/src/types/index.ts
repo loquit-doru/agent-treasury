@@ -91,6 +91,12 @@ export interface Loan {
   /** For restructured loans: reference to restructuring proposal */
   restructuredFrom?: number;
   restructuringId?: string;
+  /** Penalty rate applied when loan is overdue (basis points, added on top of base interest) */
+  penaltyRateBps?: number;
+  /** Total penalty accrued so far (raw USDt units) */
+  penaltyAccrued?: string;
+  /** Whether the borrower's credit is frozen due to this loan defaulting */
+  creditFrozen?: boolean;
 }
 
 export interface CreditTier {
