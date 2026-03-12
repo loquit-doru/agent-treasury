@@ -70,6 +70,10 @@ export interface Loan {
   interest: string;
   totalDue: string;
   active: boolean;
+  penaltyRateBps?: number;
+  penaltyAccrued?: string;
+  creditFrozen?: boolean;
+  loanType?: 'standard' | 'revenue_backed';
 }
 
 export interface DashboardData {

@@ -450,28 +450,55 @@ export default function Dashboard() {
                       <th className="py-2 text-right">Principal</th>
                       <th className="py-2 text-right">Rate</th>
                       <th className="py-2 text-right">Due</th>
+                      <th className="py-2 text-right">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-800">
-                    {data.activeLoans.map((loan) => (
-                      <tr key={loan.id} className="hover:bg-gray-800/20 transition-colors">
+                    {data.activeLoans.map((loan) => {
+                      const now = Date.now() / 1000;
+                      const isOverdue = loan.dueDate < now;
+                      const overdueDays = isOverdue ? Math.ceil((now - loan.dueDate) / 86400) : 0;
+                      return (
+                      <tr key={loan.id} className={`hover:bg-gray-800/20 transition-colors ${loan.creditFrozen ? 'opacity-60' : ''}`}>
                         <td className="py-3 font-mono text-gray-300">
-                          {loan.borrower.slice(0, 6)}...
-                          {loan.borrower.slice(-4)}
+                          <div className="flex items-center gap-2">
+                            {loan.borrower.slice(0, 6)}...{loan.borrower.slice(-4)}
+                            {loan.loanType === 'revenue_backed' && (
+                              <span className="text-[9px] bg-green-900/30 text-green-400 px-1.5 py-0.5 rounded-full">REV</span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 text-right text-white font-medium">
                           {formatAmount(loan.principal)} USDt
                         </td>
                         <td className="py-3 text-right text-gray-400">
-                          {formatPercentage(loan.interestRate / 100)}
+                          <div>
+                            {formatPercentage(loan.interestRate / 100)}
+                            {loan.penaltyRateBps ? (
+                              <span className="text-[10px] text-red-400 block">+{(loan.penaltyRateBps / 100).toFixed(0)}% penalty</span>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="py-3 text-right text-gray-400">
-                          {new Date(
-                            loan.dueDate * 1000,
-                          ).toLocaleDateString()}
+                          {new Date(loan.dueDate * 1000).toLocaleDateString()}
+                        </td>
+                        <td className="py-3 text-right">
+                          {loan.creditFrozen ? (
+                            <span className="text-[10px] bg-red-900/40 text-red-400 px-2 py-1 rounded-full font-semibold">🔒 FROZEN</span>
+                          ) : isOverdue ? (
+                            <div>
+                              <span className="text-[10px] bg-amber-900/30 text-amber-400 px-2 py-1 rounded-full font-semibold">{overdueDays}d overdue</span>
+                              {loan.penaltyAccrued && BigInt(loan.penaltyAccrued) > 0n && (
+                                <p className="text-[9px] text-red-400 mt-1">+{formatAmount(loan.penaltyAccrued)} penalty</p>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-[10px] bg-green-900/30 text-green-400 px-2 py-1 rounded-full font-semibold">Current</span>
+                          )}
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
