@@ -57,7 +57,7 @@ Every loan, every repayment — on-chain and verifiable.
 [TECH + REPO — 1:55–2:10]
 
 React + Tailwind + WebSocket dashboard. Express + TypeScript backend.
-Solidity + Foundry contracts. Groq LLM with OpenRouter Gemini failover — always on, zero cost.
+Solidity + Foundry contracts. Groq LLM with configurable failover — always on, zero cost.
 Open source. 11 out of 11 requirements. All bonus tracks covered.
 
 

@@ -25,7 +25,7 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 | Smart Contracts | Solidity 0.8.20, Foundry, deployed on Arbitrum One |
 | Backend | Node.js, Express, TypeScript, ethers.js |
 | AI/LLM | Groq (LLaMA 3.3 70B) via OpenAI-compatible API |
-| Wallet | WDK (`@tetherto/wdk-wallet-evm` v1.0.0-beta.8, `@tetherto/wdk-protocol-lending-aave-evm` v1.0.0-beta.3) — self-custodial, BIP-39 seed phrase |
+| Wallet | WDK (`@tetherto/wdk-wallet-evm` v1.0.0-beta.8, `@tetherto/wdk-protocol-lending-aave-evm` v1.0.0-beta.3) — server-side custody via BIP-39 seed phrase in `.env` |
 | Frontend | React 18, Vite, Tailwind CSS, WebSocket |
 | MCP | OpenClaw MCP server with 15 tools (stdio transport) |
 | Token | USDt (native Tether on Arbitrum One, 6 decimals) |
@@ -46,9 +46,8 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 │  ┌──────────────────┐   EventBus    ┌──────────────────┐        │
 │  │  Treasury Agent   │◄────────────►│   Credit Agent    │        │
 │  │  • Yield mgmt     │  (decoupled) │  • Credit scoring │        │
-│  │  • Risk assess    │              │  • Loan approval  │        │
-│  │  • Capital alloc  │              │  • ML prediction  │        │
-│  │  • Emergency pause│              │  • ZK proofs      │        │
+│  │  • Capital alloc  │              │  • Loan approval  │        │
+│  │  • Emergency pause│              │  • ML prediction  │        │
 │  └────────┬──────────┘              └────────┬──────────┘        │
 │           │          Board Meetings           │                  │
 │           │      (every 45s, 5 topics)        │                  │
@@ -100,14 +99,13 @@ Built for the **Tether Hackathon Galáctica: WDK Edition 1** → **Lending Bot T
 ## The Two Agents
 
 ### Treasury Agent
-**Role**: Yield optimization, risk management, capital allocation, emergency pause.
+**Role**: Yield optimization, capital allocation, emergency pause.
 
 **Monitoring loop** (every 30 seconds):
 1. Sync state from chain (real balance read)
 2. Evaluate yield opportunities via LLM
 3. Check pending transactions
-4. Risk assessment
-5. Every 10 cycles (~5 min): Harvest yield + auto-repay inter-agent debt
+4. Every 10 cycles (~5 min): Harvest yield + auto-repay inter-agent debt
 
 **Yield positions** (seeded for deterministic demo reproducibility; agent logic is fully functional):
 - Aave V3: 5,000 USDt @ 4.2% APY
@@ -255,13 +253,13 @@ All dialogue rounds visible in real-time on the React dashboard.
 - Credit profile persistence (on-chain struct)
 - Loan storage + repayment tracking
 - Multi-sig + timelock logic
-- WDK self-custodial wallet operations
+- WDK server-side custody wallet operations (seed phrase in `.env`; the server holds custody)
 - Default detection (auto-marked after 30 days)
 - Daily volume tracking on-chain
 - Transaction count for credit scoring
 
 ### Seeded (Deterministic for Reproducible Demo)
-- Yield positions (2 positions at startup; agent decision logic is fully functional, only data source is seeded for testnet stability)
+- Yield positions (2 positions at startup; agent decision logic is fully functional, only data source is seeded for demo reproducibility)
 - 7-day balance history chart (seeded from current real state; real snapshots accumulate after startup)
 
 ### Simulated (LLM Context Only)

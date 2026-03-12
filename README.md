@@ -53,11 +53,11 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 
 | Technology | Role |
 |-----------|------|
-| **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`) | Self-custodial wallet, Aave lending |
+| **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`) | Server-side wallet (seed in `.env`), Aave lending |
 | **OpenClaw** | Agent identity (SOUL.md), skills, MCP tool definitions |
 | **Foundry** | Smart contract tests (31 tests) & deployment |
 | **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning |  
-| **OpenRouter** (Gemini Flash) | Failover LLM — auto-switches on 429/5xx |
+| **Failover LLM** (configurable) | Any OpenAI-compatible provider — auto-switches on 429/5xx |
 | **MCP Server** | 15 tools for external agent access (stdio transport) |
 | **Ethers.js v6** | Read-only contract interactions |
 
@@ -95,7 +95,7 @@ agent-treasury/
 ├── frontend/                     # React 18 + Vite + Tailwind
 │   └── src/
 │       ├── pages/Dashboard.tsx   # Main dashboard (timeline, agents, loans)
-│       ├── components/           # AgentStatus, LiveLogs, WalletConnect
+│       ├── components/           # AgentStatus, LiveLogs, WalletButton
 │       └── hooks/                # useDashboard, useWebSocket (real-time)
 ├── openclaw.config.json          # OpenClaw MCP server config
 └── foundry.toml                  # Forge configuration
@@ -360,7 +360,8 @@ cd frontend && npm run build
 
 ## Security
 
-- Agents use WDK self-custodial wallets — no private keys on server
+- WDK wallet uses a server-side seed phrase (`WDK_SEED_PHRASE` in `.env`) — the server holds custody
+- ethers.js fallback uses `DEPLOYER_PRIVATE_KEY` — keep `.env` secure and out of version control
 - All vault writes go through timelock + multi-sig
 - ReentrancyGuard on every `external` function
 - Daily volume + single-tx caps
@@ -381,7 +382,7 @@ Primary (Groq/LLaMA 3.3 70B) ──[429/5xx]──► Fallback (configurable)
 - 60-second cooldown before retrying primary
 - If no LLM is configured, agents use deterministic algorithmic fallbacks
 - Configure via: `OPENAI_API_KEY`, `LLM_FALLBACK_API_KEY`, `LLM_FALLBACK_MODEL`, `LLM_FALLBACK_BASE_URL`
-- Production setup: Groq (primary) + OpenRouter Gemini Flash (fallback) — both free, 24/7 uptime
+- Production example: Groq (primary) + any OpenAI-compatible fallback (e.g. OpenRouter, OpenAI, etc.)
 
 ## Inter-Agent Dialogue (Board Meetings)
 
@@ -428,10 +429,10 @@ Separation of concerns: the Treasury Agent optimizes yield without worrying abou
 The credit formula (`500 + min(txCount*2, 200) + min(volume/100, 150) + repaidLoans*100 + min(age/10, 50) - defaults*200`) uses only publicly verifiable on-chain data. No off-chain oracles or trusted third parties. The score determines loan tier, amount cap, and interest rate autonomously.
 
 ### Why WDK + ethers.js Dual Approach?
-WDK handles wallet management and Aave lending (via `wdk-protocol-lending-aave-evm`). ethers.js handles direct smart contract reads and custom transactions (credit scoring, loan issuance). This gives us WDK's self-custodial guarantees for wallet ops and ethers.js flexibility for custom contracts.
+WDK handles wallet management and Aave lending (via `wdk-protocol-lending-aave-evm`). ethers.js handles direct smart contract reads and custom transactions (credit scoring, loan issuance). This gives us WDK for wallet ops and ethers.js flexibility for custom contracts.
 
 ### Why EventBus Instead of Direct Calls?
-Agents communicate through a pub/sub EventBus rather than direct method calls. This decouples them, enables the Telegram bot and WebSocket clients to observe all activity, and makes adding new subscribers (analytics, audit log, etc.) trivial.
+Agents communicate through a pub/sub EventBus rather than direct method calls. This decouples them, enables WebSocket clients to observe all activity, and makes adding new subscribers (analytics, audit log, etc.) trivial.
 
 ## Known Limitations
 
@@ -439,7 +440,7 @@ Agents communicate through a pub/sub EventBus rather than direct method calls. T
 - **In-memory state** — Agent decisions and dialogue rounds are stored in memory. A backend restart loses history. Persistent storage (SQLite/Postgres) is a natural next step.
 - **Single-node deployment** — Not designed for horizontal scaling. One backend instance manages both agents.
 - **No WDK for CreditLine contracts** — WDK handles wallet + Aave; custom smart contract interactions (CreditLine) use ethers.js directly since WDK doesn't have a lending-credit protocol module.
-- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt. Initial development was on Sepolia, now fully migrated to Arbitrum One.
+- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt.
 
 ## License
 

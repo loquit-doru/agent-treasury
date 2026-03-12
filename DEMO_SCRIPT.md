@@ -94,7 +94,7 @@
 **[Screen: GitHub repo — brief scroll]**
 
 > React + Tailwind + WebSocket dashboard. Express + TypeScript backend.
-> Solidity + Foundry contracts. Groq LLM with OpenRouter Gemini failover — 24/7 uptime, zero cost.
+> Solidity + Foundry contracts. Groq LLM with configurable failover — 24/7 uptime, zero cost.
 > Open source. 11 out of 11 requirements. All bonus tracks covered.
 >
 > *(Scroll briefly through repo structure)*
@@ -164,7 +164,7 @@ curl -X POST https://treasury.proceedgate.dev/api/credit/0x742d35Cc6634C0532925a
 - **Repo**: github.com/loquit-doru/agent-treasury
 - **Live Dashboard**: agent-treasury.pages.dev
 - **Live API**: treasury.proceedgate.dev
-- **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + OpenRouter Gemini Flash (failover) + React + Tailwind + WebSocket
+- **Stack**: WDK + OpenClaw + Solidity 0.8.20 + Foundry + Groq (LLaMA 3.3 70B) + configurable LLM failover + React + Tailwind + WebSocket
 - **Contracts (Arbitrum One)**:
   - TreasuryVault: `0x5503e9d53592B7D896E135804637C1710bDD5A64`
   - CreditLine: `0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0`
