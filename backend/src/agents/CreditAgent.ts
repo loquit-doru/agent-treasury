@@ -19,6 +19,7 @@ import {
   CreditTier,
 } from '../types';
 import { saveCreditState, loadCreditState } from '../services/StatePersistence';
+import { sendWriteTx } from '../services/TransactionService';
 
 // LLM Configuration
 const CREDIT_SYSTEM_PROMPT = `You are the Credit Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -107,32 +108,10 @@ export class CreditAgent {
   }
 
   /**
-   * Send a write transaction — ethers Wallet primary (has AGENT_ROLE), WDK fallback.
-   * WDK seed may derive a different address than the deployer that holds contract roles,
-   * so ethers.Wallet with DEPLOYER_PRIVATE_KEY is the reliable path.
+   * Send a write transaction via shared TransactionService.
    */
-  private async sendWriteTx(to: string, data: string, label: string): Promise<string> {
-    // Primary path: ethers Wallet (the address that has AGENT_ROLE on contracts)
-    if (this.config.privateKey) {
-      try {
-        const signer = new ethers.Wallet(this.config.privateKey, this.provider as ethers.JsonRpcProvider);
-        const tx = await signer.sendTransaction({ to, data });
-        const receipt = await tx.wait();
-        const hash = receipt!.hash;
-        logger.info(`[ethers] ${label} succeeded`, { hash });
-        return hash;
-      } catch (ethersErr) {
-        logger.warn(`[ethers] ${label} failed, falling back to WDK`, {
-          error: ethersErr instanceof Error ? ethersErr.message : String(ethersErr),
-        });
-      }
-    }
-
-    // Fallback: WDK
-    const result = await this.wdkAccount.sendTransaction({ to, value: '0', data });
-    const hash: string = result.hash ?? result;
-    logger.info(`[WDK] ${label} succeeded`, { hash });
-    return hash;
+  private sendTx(to: string, data: string, label: string): Promise<string> {
+    return sendWriteTx(this.provider, this.config.privateKey, this.wdkAccount, to, data, label);
   }
 
   /**
@@ -508,7 +487,7 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         history.defaults,
       ]);
 
-      const hash = await this.sendWriteTx(this.config.creditLineAddress, data, 'updateProfile');
+      const hash = await this.sendTx(this.config.creditLineAddress, data, 'updateProfile');
       logger.info(`On-chain profile updated for ${address}`, { hash });
     } catch (error) {
       logger.error(`Failed to update on-chain profile for ${address}`, { error: error instanceof Error ? error.message : String(error) });
@@ -569,7 +548,7 @@ Respond in JSON: {"adjustment": <-50 to +50>, "reasoning": "<1-3 sentences>"}`;
         const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowForCustom', [
           address, amount, evaluation.rateBps, customDurationSec,
         ]);
-        txHash = await this.sendWriteTx(this.config.creditLineAddress, data, `borrowForCustom(${address})`);
+        txHash = await this.sendTx(this.config.creditLineAddress, data, `borrowForCustom(${address})`);
         // Read loanCount to get the new loan ID
         const loanCount = await this.creditContract.loanCount();
         onChainLoanId = Number(loanCount) - 1;
@@ -782,11 +761,11 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
 
       // Step 1: Approve USDt for CreditLine
       const approveData = ERC20_IFACE.encodeFunctionData('approve', [this.config.creditLineAddress, amount]);
-      await this.sendWriteTx(this.config.usdtAddress, approveData, `approve USDt for repay #${loanId}`);
+      await this.sendTx(this.config.usdtAddress, approveData, `approve USDt for repay #${loanId}`);
 
       // Step 2: Repay via operator pattern
       const repayData = CREDIT_LINE_IFACE.encodeFunctionData('repayFor', [borrower, loanId, amount]);
-      const hash = await this.sendWriteTx(this.config.creditLineAddress, repayData, `repayFor loan #${loanId}`);
+      const hash = await this.sendTx(this.config.creditLineAddress, repayData, `repayFor loan #${loanId}`);
 
       // Recalculate borrower's credit
       const loan = await this.creditContract.loans(loanId);
@@ -865,11 +844,11 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
             if (BigInt(amountDue) > 0n) {
               // Approve USDT to CreditLine for repayment
               const approveData = ERC20_IFACE.encodeFunctionData('approve', [this.config.creditLineAddress, amountDue]);
-              await this.sendWriteTx(this.config.usdtAddress, approveData, `approve USDt for auto-repay loan #${loanId}`);
+              await this.sendTx(this.config.usdtAddress, approveData, `approve USDt for auto-repay loan #${loanId}`);
 
               // Execute repayFor on-chain
               const repayData = CREDIT_LINE_IFACE.encodeFunctionData('repayFor', [loan.borrower, loanId, amountDue]);
-              const txHash = await this.sendWriteTx(this.config.creditLineAddress, repayData, `auto-repayFor loan #${loanId}`);
+              const txHash = await this.sendTx(this.config.creditLineAddress, repayData, `auto-repayFor loan #${loanId}`);
 
               // Update local state
               loan.repaid = (BigInt(loan.repaid) + BigInt(amountDue)).toString();
@@ -910,7 +889,7 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
           
           try {
             const data = CREDIT_LINE_IFACE.encodeFunctionData('markDefaulted', [loanId]);
-            await this.sendWriteTx(this.config.creditLineAddress, data, `markDefaulted loan #${loanId}`);
+            await this.sendTx(this.config.creditLineAddress, data, `markDefaulted loan #${loanId}`);
           } catch (err) {
             logger.error(`Failed to mark loan ${loanId} as defaulted on-chain`, { err: err instanceof Error ? err.message : String(err) });
           }

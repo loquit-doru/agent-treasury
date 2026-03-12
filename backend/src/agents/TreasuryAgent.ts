@@ -20,6 +20,7 @@ import {
   RiskFactor,
 } from '../types';
 import { saveTreasuryState, loadTreasuryState } from '../services/StatePersistence';
+import { sendWriteTx } from '../services/TransactionService';
 
 // LLM Configuration
 const TREASURY_SYSTEM_PROMPT = `You are the Treasury Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -104,32 +105,10 @@ export class TreasuryAgent {
   }
 
   /**
-   * Send a write transaction — ethers Wallet primary (has AGENT_ROLE), WDK fallback.
-   * WDK seed may derive a different address than the deployer that holds contract roles,
-   * so ethers.Wallet with DEPLOYER_PRIVATE_KEY is the reliable path.
+   * Send a write transaction via shared TransactionService.
    */
-  private async sendWriteTx(to: string, data: string, label: string): Promise<string> {
-    // Primary path: ethers Wallet (the address that has AGENT_ROLE on contracts)
-    if (this.config.privateKey) {
-      try {
-        const signer = new ethers.Wallet(this.config.privateKey, this.provider as ethers.JsonRpcProvider);
-        const tx = await signer.sendTransaction({ to, data });
-        const receipt = await tx.wait();
-        const hash = receipt!.hash;
-        logger.info(`[ethers] ${label} succeeded`, { hash });
-        return hash;
-      } catch (ethersErr) {
-        logger.warn(`[ethers] ${label} failed, falling back to WDK`, {
-          error: ethersErr instanceof Error ? ethersErr.message : String(ethersErr),
-        });
-      }
-    }
-
-    // Fallback: WDK
-    const result = await this.wdkAccount.sendTransaction({ to, value: '0', data });
-    const hash: string = result.hash ?? result;
-    logger.info(`[WDK] ${label} succeeded`, { hash });
-    return hash;
+  private sendTx(to: string, data: string, label: string): Promise<string> {
+    return sendWriteTx(this.provider, this.config.privateKey, this.wdkAccount, to, data, label);
   }
 
   /**
@@ -154,8 +133,8 @@ export class TreasuryAgent {
     } else if (this.yieldPositions.length === 0) {
       const now = Date.now();
       this.yieldPositions.push(
-        { protocol: 'Aave V3',     amount: String(ethers.parseUnits('5000', 6)), apy: 4.2, investedAt: now - 3 * 86400_000, harvested: '0' },
-        { protocol: 'Compound V3', amount: String(ethers.parseUnits('3000', 6)), apy: 3.8, investedAt: now - 2 * 86400_000, harvested: '0' },
+        { protocol: 'Aave V3',     amount: String(ethers.parseUnits('8', 6)), apy: 4.2, investedAt: now - 3 * 86400_000, harvested: '0' },
+        { protocol: 'Compound V3', amount: String(ethers.parseUnits('5', 6)), apy: 3.8, investedAt: now - 2 * 86400_000, harvested: '0' },
       );
       logger.info('Seeded yield positions for deterministic demo reproducibility');
     }
@@ -292,8 +271,8 @@ export class TreasuryAgent {
   private seedHistoryFromCurrentState(): void {
     if (this.historySnapshots.length > 7) return; // already has data
     const now = Date.now();
-    const currentBal = this.lastState ? Number(this.lastState.balance) / 1e6 : 50000;
-    const currentVol = this.lastState ? Number(this.lastState.dailyVolume) / 1e6 : 180;
+    const currentBal = this.lastState ? Number(this.lastState.balance) / 1e6 : 16;
+    const currentVol = this.lastState ? Number(this.lastState.dailyVolume) / 1e6 : 1;
     const yieldTotal = this.yieldPositions.reduce(
       (sum, p) => sum + Number(p.amount) / 1e6, 0
     );
@@ -672,7 +651,7 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
           amount,
           Math.floor(apy * 100),
         ]);
-        hash = await this.sendWriteTx(this.config.treasuryVaultAddress, data, `investInYield(${protocol})`);
+        hash = await this.sendTx(this.config.treasuryVaultAddress, data, `investInYield(${protocol})`);
       } catch (txErr) {
         logger.warn('On-chain investInYield reverted (position tracked off-chain)', {
           protocol, error: txErr instanceof Error ? txErr.message : String(txErr),
@@ -722,11 +701,11 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
           if (shouldExecute) {
             if (Number(signatures) < 2 && amount >= ethers.parseUnits('1000', 6)) {
               const data = VAULT_IFACE.encodeFunctionData('signTransaction', [txHash]);
-              await this.sendWriteTx(this.config.treasuryVaultAddress, data, 'signTransaction');
+              await this.sendTx(this.config.treasuryVaultAddress, data, 'signTransaction');
               logger.info('Transaction signed', { txHash });
             } else {
               const data = VAULT_IFACE.encodeFunctionData('executeWithdrawal', [txHash]);
-              await this.sendWriteTx(this.config.treasuryVaultAddress, data, 'executeWithdrawal');
+              await this.sendTx(this.config.treasuryVaultAddress, data, 'executeWithdrawal');
               logger.info('Transaction executed', { txHash });
             }
           }
@@ -913,7 +892,7 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
   async emergencyPause(): Promise<void> {
     try {
       const data = VAULT_IFACE.encodeFunctionData('emergencyPause', []);
-      await this.sendWriteTx(this.config.treasuryVaultAddress, data, 'emergencyPause');
+      await this.sendTx(this.config.treasuryVaultAddress, data, 'emergencyPause');
       this.status = 'paused';
       
       EventBus.emitEvent('treasury:emergency_pause', 'treasury', {
@@ -938,7 +917,7 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
       }
 
       const data = VAULT_IFACE.encodeFunctionData('proposeWithdrawal', [to, amount]);
-      const hash = await this.sendWriteTx(this.config.treasuryVaultAddress, data, 'proposeWithdrawal');
+      const hash = await this.sendTx(this.config.treasuryVaultAddress, data, 'proposeWithdrawal');
 
       const decision: AgentDecision = {
         id: `withdraw-${Date.now()}`,
@@ -968,7 +947,7 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
       const protocolAddress = this.getProtocolAddress(protocol);
       const data = VAULT_IFACE.encodeFunctionData('harvestYield', [protocolAddress, expectedAmount]);
 
-      const hash = await this.sendWriteTx(this.config.treasuryVaultAddress, data, `harvestYield(${protocol})`);
+      const hash = await this.sendTx(this.config.treasuryVaultAddress, data, `harvestYield(${protocol})`);
 
       // Update yield position harvested amount
       const pos = this.yieldPositions.find(p => p.protocol.toLowerCase().includes(protocol));
