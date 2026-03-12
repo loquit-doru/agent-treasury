@@ -67,3 +67,24 @@ dashboard_dump.json
 .state_backfill/
 backend/data/
 S6As3.jpg
+
+# Internal docs / hackathon artifacts
+HACKATHON_PLAN.md
+DEMO_SCRIPT.md
+DEMO_VOICEOVER.txt
+PROJECT_REVIEW.md
+ONCHAIN_PROOF.md
+*.webp
+
+# Demo & recording scripts
+scripts/demo-*.ps1
+scripts/demo-*.html
+scripts/obs-*.ps1
+scripts/record-*.mjs
+scripts/add-voiceover.mjs
+
+# Training scripts (one-time use)
+backend/src/services/train-*.ts
+
+# Tunnel config (local)
+cloudflared.yml

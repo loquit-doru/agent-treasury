@@ -1,7 +1,0 @@
-tunnel: 7b2d4c23-d9e4-45ed-a6f8-bf72c4446ef3
-credentials-file: C:\Users\quit\.cloudflared\7b2d4c23-d9e4-45ed-a6f8-bf72c4446ef3.json
-
-ingress:
-  - hostname: treasury.proceedgate.dev
-    service: http://localhost:3001
-  - service: http_status:404
