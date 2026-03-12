@@ -22,7 +22,7 @@ import { LLMClient } from './services/LLMClient';
 import { InterAgentLending } from './services/InterAgentLending';
 import { predictDefault } from './services/DefaultPredictor';
 import { generateProof, verifyProof, getBestProvableTier, type ZKCreditProof } from './services/ZKCreditProof';
-import { initWdk, getAccount, disposeWdk } from './services/wdk';
+import { initWdk, getAccount, getWdkAddress, disposeWdk } from './services/wdk';
 import logger from './utils/logger';
 import { AgentConfig, DashboardData, AgentStatus } from './types';
 
@@ -151,6 +151,20 @@ async function initializeAgents(): Promise<void> {
     });
 
     const wdkAccount = await getAccount(wdk);
+
+    // Detect WDK ↔ ethers address mismatch
+    const wdkAddr = await getWdkAddress(wdk);
+    if (config.privateKey) {
+      const ethersAddr = new ethers.Wallet(config.privateKey).address;
+      if (wdkAddr.toLowerCase() !== ethersAddr.toLowerCase()) {
+        logger.warn(
+          `WDK address (${wdkAddr}) ≠ DEPLOYER_PRIVATE_KEY address (${ethersAddr}). ` +
+          `ethers signer will be used for writes (has AGENT_ROLE on contracts). ` +
+          `To fix: generate a WDK seed that derives ${ethersAddr}, ` +
+          `or grant AGENT_ROLE to ${wdkAddr} on-chain.`
+        );
+      }
+    }
 
     // ethers provider is still used for contract interactions
     const provider = new ethers.JsonRpcProvider(config.rpcUrl);

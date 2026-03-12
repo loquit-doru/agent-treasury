@@ -107,30 +107,31 @@ export class CreditAgent {
   }
 
   /**
-   * Send a write transaction via WDK; if WDK fails, fallback to ethers signer.
-   * Returns the tx hash on success.
+   * Send a write transaction — ethers Wallet primary (has AGENT_ROLE), WDK fallback.
+   * WDK seed may derive a different address than the deployer that holds contract roles,
+   * so ethers.Wallet with DEPLOYER_PRIVATE_KEY is the reliable path.
    */
   private async sendWriteTx(to: string, data: string, label: string): Promise<string> {
-    // Primary path: WDK
-    try {
-      const result = await this.wdkAccount.sendTransaction({ to, value: '0', data });
-      const hash: string = result.hash ?? result;
-      logger.info(`[WDK] ${label} succeeded`, { hash });
-      return hash;
-    } catch (wdkErr) {
-      logger.warn(`[WDK] ${label} failed, falling back to ethers signer`, {
-        error: wdkErr instanceof Error ? wdkErr.message : String(wdkErr),
-      });
+    // Primary path: ethers Wallet (the address that has AGENT_ROLE on contracts)
+    if (this.config.privateKey) {
+      try {
+        const signer = new ethers.Wallet(this.config.privateKey, this.provider as ethers.JsonRpcProvider);
+        const tx = await signer.sendTransaction({ to, data });
+        const receipt = await tx.wait();
+        const hash = receipt!.hash;
+        logger.info(`[ethers] ${label} succeeded`, { hash });
+        return hash;
+      } catch (ethersErr) {
+        logger.warn(`[ethers] ${label} failed, falling back to WDK`, {
+          error: ethersErr instanceof Error ? ethersErr.message : String(ethersErr),
+        });
+      }
     }
 
-    // Fallback: ethers Wallet from private key (preferred) or seed phrase
-    const signer = this.config.privateKey
-      ? new ethers.Wallet(this.config.privateKey, this.provider as ethers.JsonRpcProvider)
-      : ethers.Wallet.fromPhrase(this.config.seedPhrase).connect(this.provider as ethers.JsonRpcProvider);
-    const tx = await signer.sendTransaction({ to, data });
-    const receipt = await tx.wait();
-    const hash = receipt!.hash;
-    logger.info(`[ethers] ${label} succeeded`, { hash });
+    // Fallback: WDK
+    const result = await this.wdkAccount.sendTransaction({ to, value: '0', data });
+    const hash: string = result.hash ?? result;
+    logger.info(`[WDK] ${label} succeeded`, { hash });
     return hash;
   }
 

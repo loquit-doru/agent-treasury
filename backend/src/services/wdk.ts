@@ -75,6 +75,14 @@ export function getAaveLending(account: Awaited<ReturnType<typeof getAccount>>) 
 }
 
 /**
+ * Get the WDK-derived address for the primary account.
+ */
+export async function getWdkAddress(wdk: WDK): Promise<string> {
+  const account = await wdk.getAccount('ethereum', 0);
+  return (account as any).address ?? '';
+}
+
+/**
  * Tear down WDK (call on shutdown).
  */
 export async function disposeWdk(): Promise<void> {
