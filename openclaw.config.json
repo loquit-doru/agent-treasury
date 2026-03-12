@@ -11,12 +11,6 @@
       "env": {
         "BACKEND_URL": "http://localhost:3001"
       }
-    },
-    "wdk-mcp": {
-      "command": "bun",
-      "args": ["run", "start"],
-      "cwd": "wdk-mcp",
-      "env": {}
     }
   }
 }

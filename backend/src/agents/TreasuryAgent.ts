@@ -8,6 +8,8 @@ import type WDK from '@tetherto/wdk';
 import { LLMClient } from '../services/LLMClient';
 import EventBus from '../orchestrator/EventBus';
 import { getAaveLending } from '../services/wdk';
+import type { WdkAccount } from '../services/wdk';
+import type { WalletAccountEvm } from '@tetherto/wdk-wallet-evm';
 import logger from '../utils/logger';
 import {
   AgentStatus,
@@ -72,7 +74,7 @@ const VAULT_IFACE = new ethers.Interface(TREASURY_VAULT_ABI);
 export class TreasuryAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private wdkAccount: any; // WDK account type
+  private wdkAccount: WdkAccount;
   private vaultContract: ethers.Contract;
   private llm: LLMClient;
   private config: AgentConfig;
@@ -87,7 +89,7 @@ export class TreasuryAgent {
     config: AgentConfig,
     provider: ethers.Provider,
     _wdk: WDK,
-    wdkAccount: any,
+    wdkAccount: WdkAccount,
     llmClient: LLMClient,
   ) {
     this.config = config;
@@ -152,8 +154,9 @@ export class TreasuryAgent {
     );
 
     // Emit startup event
+    const wdkAddr = await this.wdkAccount.getAddress();
     EventBus.emitEvent('agent:started', 'treasury', {
-      address: this.wdkAccount.address ?? 'unknown',
+      address: wdkAddr,
       vault: this.config.treasuryVaultAddress,
     });
 
@@ -494,20 +497,17 @@ export class TreasuryAgent {
     try {
       const aave = getAaveLending(this.wdkAccount);
       if (aave) {
-        const accountData = await (aave as any).getAccountData?.();
+        // getAccountData() is the only public read method on AaveProtocolEvm — returns
+        // { totalCollateralBase, totalDebtBase, availableBorrowsBase, healthFactor, ... }
+        const accountData = await aave.getAccountData();
         if (accountData) {
-          logger.info('WDK Aave accountData retrieved', { accountData });
+          logger.info('WDK Aave accountData retrieved', {
+            totalCollateral: accountData.totalCollateralBase.toString(),
+            totalDebt: accountData.totalDebtBase.toString(),
+            healthFactor: accountData.healthFactor.toString(),
+          });
         }
-        // Try supply APY via WDK
-        const reserveData = await (aave as any).getReserveData?.(this.config.usdtAddress);
-        if (reserveData?.currentLiquidityRate) {
-          const apy = Number(reserveData.currentLiquidityRate) / 1e25; // ray → %
-          if (apy > 0 && apy < 50) {
-            opportunities.push({ protocol: 'aave', apy, tvl: '0', risk: 'low' });
-            logger.info('WDK Aave yield data', { apy });
-            return opportunities;
-          }
-        }
+        // WDK Aave SDK does NOT expose getReserveData() — APY is fetched via on-chain fallback below.
       }
     } catch (err) {
       logger.debug('WDK Aave data unavailable, using on-chain fallback', { err });
@@ -665,14 +665,28 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
       let hash: string | undefined;
 
       // Primary: WDK Aave lending supply (real DeFi interaction)
+      // Requires: approve USDt to Aave pool first, then supply.
       try {
         const aave = getAaveLending(this.wdkAccount);
         if (aave) {
-          const supplyResult = await (aave as any).supply({
+          // Step 1: Approve USDt spending by Aave pool (required per WDK docs)
+          // approve() is on WalletAccountEvm, not the base interface
+          if (this.config.aavePoolAddress) {
+            const evmAccount = this.wdkAccount as unknown as WalletAccountEvm;
+            const approveResult = await evmAccount.approve({
+              token: this.config.usdtAddress,
+              spender: this.config.aavePoolAddress,
+              amount,
+            });
+            logger.info('WDK approve for Aave supply succeeded', { hash: approveResult.hash });
+          }
+
+          // Step 2: Supply to Aave via WDK lending protocol
+          const supplyResult = await aave.supply({
             token: this.config.usdtAddress,
             amount,
           });
-          hash = supplyResult?.hash ?? supplyResult;
+          hash = supplyResult.hash;
           logger.info('WDK Aave supply succeeded', { protocol, amount: amount.toString(), hash });
         }
       } catch (aaveErr) {
@@ -935,8 +949,9 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
       await this.sendTx(this.config.treasuryVaultAddress, data, 'emergencyPause');
       this.status = 'paused';
       
+      const pauseAddr = await this.wdkAccount.getAddress();
       EventBus.emitEvent('treasury:emergency_pause', 'treasury', {
-        triggeredBy: this.wdkAccount.address ?? 'unknown',
+        triggeredBy: pauseAddr,
       });
       
       logger.warn('EMERGENCY PAUSE ACTIVATED');

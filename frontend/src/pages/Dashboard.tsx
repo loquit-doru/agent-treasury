@@ -80,6 +80,10 @@ export default function Dashboard() {
   const [healthData, setHealthData] = useState<HealthData | null>(null);
   const [syncing, setSyncing] = useState(false);
 
+  // Revenue-Backed Lending & Debt Restructuring
+  const [revenueSummary, setRevenueSummary] = useState<Record<string, unknown> | null>(null);
+  const [restructuringSummary, setRestructuringSummary] = useState<Record<string, unknown> | null>(null);
+
   // Fetch treasury health
   const fetchHealth = async () => {
     try {
@@ -106,9 +110,23 @@ export default function Dashboard() {
     }
   };
 
+  const fetchInnovation = async () => {
+    try {
+      const [revRes, restRes] = await Promise.all([
+        fetch(apiUrl('/api/revenue/summary')),
+        fetch(apiUrl('/api/restructuring/proposals')),
+      ]);
+      if (revRes.ok) { const d = await revRes.json(); setRevenueSummary(d.data ?? null); }
+      if (restRes.ok) { const d = await restRes.json(); setRestructuringSummary(d.data?.summary ?? null); }
+    } catch { /* ignore */ }
+  };
+
+
+
   useEffect(() => {
     fetchHealth();
-    const interval = setInterval(fetchHealth, 15000);
+    fetchInnovation();
+    const interval = setInterval(() => { fetchHealth(); fetchInnovation(); }, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -535,6 +553,83 @@ export default function Dashboard() {
         <div className="lg:col-span-1 space-y-6">
            <DecisionTimeline decisions={decisions} />
         </div>
+      </div>
+
+      {/* ── Innovation: Revenue-Backed Lending + Debt Restructuring ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Panel title="Revenue-Backed Lending" icon={<TrendingUp className="w-4 h-4 text-green-400" />}>
+          {!revenueSummary || (revenueSummary as any).totalRevenue === '0' ? (
+            <div className="text-center space-y-3">
+              <EmptyState text="No revenue events tracked yet" />
+              <p className="text-xs text-gray-500 mt-1">Revenue events are tracked automatically when agents earn from tasks, yield, or services</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700">
+                  <p className="text-xs text-gray-500 uppercase">Total Revenue</p>
+                  <p className="text-lg font-bold text-green-400">{formatAmount((revenueSummary as any).totalRevenue)} USDt</p>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700">
+                  <p className="text-xs text-gray-500 uppercase">Tracked Agents</p>
+                  <p className="text-lg font-bold text-white">{(revenueSummary as any).agents?.length ?? 0}</p>
+                </div>
+              </div>
+              {((revenueSummary as any).agents ?? []).map((a: any) => (
+                <div key={a.agentAddress} className="bg-gray-900/30 rounded-lg p-3 border border-gray-700/50 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs font-mono text-gray-400">{a.agentAddress.slice(0, 8)}...{a.agentAddress.slice(-6)}</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${a.revenueVelocity >= 0 ? 'bg-green-900/30 text-green-400' : 'bg-red-900/30 text-red-400'}`}>
+                      {a.revenueVelocity >= 0 ? '↑' : '↓'} {(a.revenueVelocity * 100).toFixed(0)}% velocity
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div><p className="text-[10px] text-gray-500">24h</p><p className="text-xs text-white font-semibold">{formatAmount(a.revenue24h)}</p></div>
+                    <div><p className="text-[10px] text-gray-500">7d</p><p className="text-xs text-white font-semibold">{formatAmount(a.revenue7d)}</p></div>
+                    <div><p className="text-[10px] text-gray-500">Borrow Cap</p><p className="text-xs text-green-400 font-semibold">{formatAmount(a.borrowCapacity)}</p></div>
+                  </div>
+                  <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                    <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${Math.min(a.consistency * 100, 100)}%` }} />
+                  </div>
+                  <p className="text-[10px] text-gray-500 text-right">Consistency: {(a.consistency * 100).toFixed(0)}%</p>
+                </div>
+              ))}
+
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Autonomous Debt Restructuring" icon={<Shield className="w-4 h-4 text-amber-400" />}>
+          {!restructuringSummary || (restructuringSummary as any).totalProposals === 0 ? (
+            <div className="text-center space-y-2">
+              <EmptyState text="No restructuring proposals yet" />
+              <p className="text-xs text-gray-500">ML detects at-risk loans → LLM negotiates new terms autonomously</p>
+              <div className="flex justify-center gap-2 mt-2">
+                <span className="text-[10px] bg-gray-700 text-gray-400 px-2 py-1 rounded-full">ML Default Prediction</span>
+                <span className="text-[10px] bg-gray-700 text-gray-400 px-2 py-1 rounded-full">LLM Negotiation</span>
+                <span className="text-[10px] bg-gray-700 text-gray-400 px-2 py-1 rounded-full">Auto-Accept</span>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-amber-900/20 rounded-lg p-3 border border-amber-700/30 text-center">
+                  <p className="text-xs text-gray-500">Proposed</p>
+                  <p className="text-lg font-bold text-amber-400">{(restructuringSummary as any).pending}</p>
+                </div>
+                <div className="bg-green-900/20 rounded-lg p-3 border border-green-700/30 text-center">
+                  <p className="text-xs text-gray-500">Accepted</p>
+                  <p className="text-lg font-bold text-green-400">{(restructuringSummary as any).accepted}</p>
+                </div>
+                <div className="bg-gray-900/50 rounded-lg p-3 border border-gray-700 text-center">
+                  <p className="text-xs text-gray-500">Forgiven</p>
+                  <p className="text-lg font-bold text-purple-400">{formatAmount((restructuringSummary as any).totalForgivenAmount ?? '0')} USDt</p>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 text-center">Total proposals: {(restructuringSummary as any).totalProposals} • Declined: {(restructuringSummary as any).declined} • Expired: {(restructuringSummary as any).expired}</p>
+            </div>
+          )}
+        </Panel>
       </div>
 
       {/* ── Bonus Features Section ── */}

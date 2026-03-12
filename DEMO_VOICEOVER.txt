@@ -1,71 +1,62 @@
-AgentTreasury CORE — Voiceover Script (v6)
-===========================================
-
-[HOOK — 0:00–0:12]
-
-A hundred and fifty thousand USDt in a DAO vault. No CFO. No multisig committee.
-Two AI agents manage everything — lending, yield, risk scoring.
-Let me show you how it works.
+AgentTreasury CORE — Voiceover Script (v8 — concise)
+====================================================
+Target: 2:30–3:00 | Fast pace, let the dashboard speak
 
 
-[LOAN FLOW — 0:12–0:40]
+[HOOK — 0:00–0:10]
 
-A borrower connects and requests USDt.
-The Credit Agent evaluates: 7 on-chain factors, ML default prediction, LLM reasoning.
-Score: 750. Risk: 1.4%. Approved.
-
-Loan disbursed on-chain. Interest rate set. 30-day terms.
-The entire flow — autonomous.
+Two AI agents. One DAO treasury. Real USDt on Arbitrum mainnet.
+No humans in the loop. This is AgentTreasury CORE.
 
 
-[TREASURY + YIELD — 0:40–0:55]
+[DASHBOARD OVERVIEW — 0:10–0:40]
 
-Meanwhile, the Treasury Agent manages idle capital.
-It found Aave at 4.2% — invested automatically.
-When yield comes in, it auto-repays inter-agent debt. Oldest first.
+Here's the live dashboard.
+Top row: Treasury Balance 13 USDt liquid, Daily Volume 3 USDt,
+2 Yield Positions at 4% average APY, 2 Credit Profiles, 3 active loans.
+Health Score: 55 out of 100, rated Fair — liquidity is low,
+but overdue, yield, volume, and debt all at 100%.
 
+Below — Balance History chart updating in real time,
+and the Credit Score Distribution: one borrower at 624, one at 725.
 
-[BOARD MEETING — 0:55–1:20]
-
-These agents don't just execute. They debate.
-
-Treasury proposes a yield allocation. Credit pushes back — it needs liquidity for upcoming loans.
-They negotiate. They reach consensus.
-
-This is a real Board Meeting — LLM-to-LLM dialogue. Not scripted.
-Every meeting produces different arguments.
+Everything goes through Tether's WDK — self-custodial wallet, primary signer on every transaction.
 
 
-[ML + ZK + HEALTH — 1:20–1:40]
+[LOANS — LIVE — 0:40–1:15]
 
-Health Score: 96 out of 100. Excellent. Six weighted factors.
+Active Loans table: 3 loans — two at 2 USDt with 5% rate, one at 1 USDt at 10%. Total exposure: 5 USDt.
 
-ML model predicts loan defaults with 7 features — calibrated against real DeFi liquidation data.
-ZK-inspired proofs let borrowers prove their credit tier
-without revealing the exact score. Privacy by design.
-
-
-[WDK + ON-CHAIN — 1:40–1:55]
-
-Under the hood — Tether's WDK handles wallets and signing.
-And this is live on Arbitrum One.
-
-TreasuryVault — real contract. CreditLine — real transactions.
-Every loan, every repayment — on-chain and verifiable.
+Let's trigger a new one.
+ML model scores the borrower — 7 on-chain factors. If default risk exceeds 60%, it's blocked before the LLM even runs.
+LLM negotiates terms, agent calls borrowForCustom on-chain — loan created, USDt disbursed.
+Watch the Decision Audit Trail on the right — every step with full reasoning.
 
 
-[TECH + REPO — 1:55–2:10]
+[YIELD — 1:15–1:40]
 
-React + Tailwind + WebSocket dashboard. Express + TypeScript backend.
-Solidity + Foundry contracts. Groq LLM with configurable failover — always on, zero cost.
-Open source. 11 out of 11 requirements. All bonus tracks covered.
+Yield Positions panel: Aave V3 holds 127.59 USDt at 4.2% APY,
+Compound V3 holds 5 USDt at 3.8%. LLM picks strategy, WDK signs.
+
+Inter-agent lending: Credit requests funds from Treasury, capped at 20%.
+When yield is harvested, it auto-repays inter-agent debt — oldest first.
 
 
-[CTA — 2:10–2:25]
+[BOARD MEETING — LIVE — 1:40–2:10]
+
+Every 3 minutes — a Board Meeting. LLM-to-LLM debate, 5 turns.
+Treasury proposes, Credit pushes back, Risk weighs in.
+Consensus is extracted and executed automatically. Every meeting is different — not scripted.
+
+You can follow it live in the Agent Chat panel.
+
+
+[ON-CHAIN + CTA — 2:10–2:30]
+
+Everything on Arbitrum One mainnet — real contracts, real USDt, verifiable on Arbiscan.
 
 AgentTreasury CORE.
+Autonomous lending. ML risk gating. LLM yield strategy. ZK credit proofs.
+Inter-agent governance with Board Meetings. Revenue-based debt servicing.
 
-Autonomous lending. Yield optimization. Inter-agent governance.
-ML risk scoring. ZK credit proofs.
-
-Two AI agents. One treasury. Full autonomy with on-chain safety.
+Built with WDK, OpenClaw, Solidity, and Groq. Details in the README. Thank you.

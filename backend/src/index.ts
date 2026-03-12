@@ -22,6 +22,8 @@ import { LLMClient } from './services/LLMClient';
 import { InterAgentLending } from './services/InterAgentLending';
 import { predictDefault } from './services/DefaultPredictor';
 import { generateProof, verifyProof, getBestProvableTier, type ZKCreditProof } from './services/ZKCreditProof';
+import { RevenueTracker } from './services/RevenueTracker';
+import { DebtRestructuring } from './services/DebtRestructuring';
 import { initWdk, getAccount, getWdkAddress, disposeWdk } from './services/wdk';
 import logger from './utils/logger';
 import { AgentConfig, DashboardData, AgentStatus } from './types';
@@ -133,6 +135,8 @@ let creditAgent: CreditAgent | null = null;
 let riskAgent: RiskAgent | null = null;
 let agentDialogue: AgentDialogue | null = null;
 let interAgentLending: InterAgentLending | null = null;
+let revenueTracker: RevenueTracker | null = null;
+let debtRestructuring: DebtRestructuring | null = null;
 
 // WebSocket clients
 const wsClients = new Set<import('ws').WebSocket>();
@@ -146,7 +150,6 @@ async function initializeAgents(): Promise<void> {
     const wdk = await initWdk({
       seedPhrase: config.seedPhrase,
       rpcUrl: config.rpcUrl,
-      chainId: config.chainId,
       aavePoolAddress: config.aavePoolAddress,
     });
 
@@ -198,6 +201,12 @@ async function initializeAgents(): Promise<void> {
     // Start agents
     await treasuryAgent.start();
     await creditAgent.start();
+
+    // Initialize revenue tracker and debt restructuring (innovation features)
+    revenueTracker = new RevenueTracker();
+    debtRestructuring = new DebtRestructuring(llmClient);
+    creditAgent.setRevenueTracker(revenueTracker);
+    creditAgent.setDebtRestructuring(debtRestructuring);
 
     // Start risk & compliance agent (advisory only)
     riskAgent = new RiskAgent(config);
@@ -288,6 +297,8 @@ async function getDashboardData(): Promise<DashboardData> {
     agentDecisions,
     agentStatus,
     dialogueRounds: agentDialogue?.getRecentDialogues(3) || [],
+    revenueTracking: revenueTracker?.getSummary() || null,
+    debtRestructuring: debtRestructuring?.getSummary() || null,
   };
 }
 
@@ -599,11 +610,20 @@ app.post('/api/credit/:address/repay', requireApiKey, async (req, res) => {
       res.status(400).json({ success: false, error: 'Invalid Ethereum address' });
       return;
     }
-    const { loanId, amount } = req.body as { loanId: number; amount: string };
+    const { loanId, amount, onChainDone } = req.body as { loanId: number; amount: string; onChainDone?: boolean };
     if (loanId == null || !amount) {
       res.status(400).json({ success: false, error: 'Missing loanId or amount' });
       return;
     }
+
+    if (onChainDone) {
+      // Frontend already executed repay() on-chain from borrower's wallet.
+      // Just sync local state.
+      creditAgent?.syncRepaymentLocal(loanId, BigInt(amount));
+      res.json({ success: true, synced: true });
+      return;
+    }
+
     const result = await creditAgent?.processRepayment(loanId, BigInt(amount));
     if (result?.ok) {
       res.json({ success: true });
@@ -800,6 +820,131 @@ app.post('/api/inter-agent/harvest', requireApiKey, async (_req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: 'Harvest failed' });
+  }
+});
+
+// ==================== Revenue-Backed Lending ====================
+
+// Revenue tracker summary
+app.get('/api/revenue/summary', async (_req, res) => {
+  try {
+    if (!revenueTracker) {
+      res.status(503).json({ success: false, error: 'RevenueTracker not initialized' });
+      return;
+    }
+    res.json({ success: true, data: revenueTracker.getSummary() });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch revenue summary' });
+  }
+});
+
+// Revenue profile for a specific agent
+app.get('/api/revenue/:agent/profile', async (req, res) => {
+  try {
+    if (!revenueTracker) {
+      res.status(503).json({ success: false, error: 'RevenueTracker not initialized' });
+      return;
+    }
+    const profile = revenueTracker.getProfile(req.params.agent);
+    res.json({ success: true, data: profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch revenue profile' });
+  }
+});
+
+// Simulate revenue for demo purposes
+app.post('/api/revenue/:agent/simulate', requireApiKey, async (req, res) => {
+  try {
+    if (!revenueTracker) {
+      res.status(503).json({ success: false, error: 'RevenueTracker not initialized' });
+      return;
+    }
+    const count = Math.min(Number(req.body?.count) || 5, 50);
+    revenueTracker.simulateRevenue(req.params.agent, count);
+    res.json({
+      success: true,
+      data: {
+        message: `Simulated ${count} revenue events`,
+        profile: revenueTracker.getProfile(req.params.agent),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Revenue simulation failed' });
+  }
+});
+
+// Revenue-backed borrow
+app.post('/api/revenue/:agent/borrow', requireApiKey, async (req, res) => {
+  try {
+    if (!creditAgent) {
+      res.status(503).json({ success: false, error: 'CreditAgent not initialized' });
+      return;
+    }
+    const { amount } = req.body as { amount: string };
+    if (!amount) {
+      res.status(400).json({ success: false, error: 'Missing amount' });
+      return;
+    }
+    const loan = await creditAgent.processRevenueBackedBorrow(req.params.agent, BigInt(amount));
+    if (!loan) {
+      res.status(400).json({ success: false, error: 'Revenue-backed borrow rejected — insufficient revenue history or capacity' });
+      return;
+    }
+    res.json({ success: true, data: { loan } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Revenue-backed borrow failed' });
+  }
+});
+
+// ==================== Debt Restructuring ====================
+
+// Get restructuring proposals
+app.get('/api/restructuring/proposals', async (req, res) => {
+  try {
+    if (!debtRestructuring) {
+      res.status(503).json({ success: false, error: 'DebtRestructuring not initialized' });
+      return;
+    }
+    const status = req.query.status as string | undefined;
+    const validStatuses = ['proposed', 'accepted', 'declined', 'expired'];
+    const filterStatus = status && validStatuses.includes(status) ? status as 'proposed' | 'accepted' | 'declined' | 'expired' : undefined;
+    res.json({
+      success: true,
+      data: {
+        proposals: debtRestructuring.getProposals(filterStatus),
+        summary: debtRestructuring.getSummary(),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch restructuring proposals' });
+  }
+});
+
+// Accept a restructuring proposal
+app.post('/api/restructuring/:proposalId/accept', requireApiKey, async (req, res) => {
+  try {
+    if (!debtRestructuring) {
+      res.status(503).json({ success: false, error: 'DebtRestructuring not initialized' });
+      return;
+    }
+    const proposal = debtRestructuring.acceptProposal(req.params.proposalId);
+    if (!proposal) {
+      res.status(404).json({ success: false, error: 'Proposal not found or already resolved' });
+      return;
+    }
+    // Apply to local loan state
+    if (creditAgent) {
+      // Emit event that CreditAgent listens to
+      EventBus.emitEvent('credit:restructuring_accepted', 'credit', {
+        loanId: proposal.originalLoanId,
+        newDueDate: proposal.proposedTerms.newDueDate,
+        newRate: proposal.proposedTerms.newRateBps,
+        forgiveness: proposal.proposedTerms.forgiveness,
+      });
+    }
+    res.json({ success: true, data: { proposal } });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to accept proposal' });
   }
 });
 

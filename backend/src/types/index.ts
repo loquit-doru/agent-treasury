@@ -84,6 +84,13 @@ export interface Loan {
   interest: string;
   totalDue: string;
   active: boolean;
+  /** Revenue-backed loans use projected agent income as collateral instead of crypto */
+  loanType?: 'standard' | 'revenue_backed';
+  /** For revenue-backed: the projected 30d revenue at time of issuance */
+  revenueProjection?: string;
+  /** For restructured loans: reference to restructuring proposal */
+  restructuredFrom?: number;
+  restructuringId?: string;
 }
 
 export interface CreditTier {
@@ -145,6 +152,8 @@ export interface DashboardData {
   agentDecisions: AgentDecision[];
   agentStatus: Record<AgentType, AgentStatus>;
   dialogueRounds: DialogueRound[];
+  revenueTracking?: Record<string, unknown> | null;
+  debtRestructuring?: Record<string, unknown> | null;
 }
 
 // Configuration Types

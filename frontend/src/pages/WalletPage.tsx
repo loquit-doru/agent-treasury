@@ -18,11 +18,12 @@ import { formatAmount, formatPercentage } from '../utils/format';
 import type { CreditProfile, Loan, DefaultPrediction } from '../types';
 
 // Constants using Vite Env
-const TREASURY_VAULT_ADDRESS = import.meta.env.VITE_TREASURY_VAULT_ADDRESS || '0xVaultAddress';
-const USDT_ADDRESS = import.meta.env.VITE_USDT_ADDRESS || '0xUSDTAddress';
-const EXPECTED_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID || '31337');
-const CHAIN_NAME = import.meta.env.VITE_CHAIN_NAME || 'AgentTreasury Local';
-const RPC_URL = 'http://127.0.0.1:8545';
+const TREASURY_VAULT_ADDRESS = import.meta.env.VITE_TREASURY_VAULT_ADDRESS || '0x5503e9d53592B7D896E135804637C1710bDD5A64';
+const USDT_ADDRESS = import.meta.env.VITE_USDT_ADDRESS || '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9';
+const CREDIT_LINE_ADDRESS = import.meta.env.VITE_CREDIT_LINE_ADDRESS || '0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0';
+const EXPECTED_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID || '42161');
+const CHAIN_NAME = import.meta.env.VITE_CHAIN_NAME || 'Arbitrum One';
+const RPC_URL = 'https://arb1.arbitrum.io/rpc';
 
 /** Ensure MetaMask is on the correct chain; auto-add if missing */
 async function ensureCorrectChain(): Promise<void> {
@@ -60,6 +61,10 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function balanceOf(address owner) external view returns (uint256)",
   "function allowance(address owner, address spender) external view returns (uint256)",
+];
+const CREDIT_LINE_ABI = [
+  "function repay(uint256 loanId, uint256 amount) external",
+  "function getAmountDue(uint256 loanId) external view returns (uint256)",
 ];
 
 export default function WalletPage() {
@@ -235,27 +240,53 @@ export default function WalletPage() {
   const handleRepay = async (loanId: number) => {
     const target = lookupAddress || address;
     if (!target || !repayAmount || isNaN(Number(repayAmount)) || Number(repayAmount) <= 0) return;
+    if (!window.ethereum) { alert('Please install MetaMask'); return; }
     setIsRepaying(true);
     setRepayResult(null);
     try {
-      const wei = parseUnits(repayAmount, 6).toString();
-      const res = await fetch(apiUrl(`/api/credit/${target}/repay`), {
+      await ensureCorrectChain();
+      const provider = new BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const parsedAmount = parseUnits(repayAmount, 6);
+
+      // 1. Approve USDt for CreditLine
+      const usdtContract = new Contract(USDT_ADDRESS, ERC20_ABI, signer);
+      const allowance = await usdtContract.allowance(target, CREDIT_LINE_ADDRESS);
+      if (allowance < parsedAmount) {
+        const approveTx = await usdtContract.approve(CREDIT_LINE_ADDRESS, parsedAmount);
+        await approveTx.wait();
+      }
+
+      // 2. Repay directly from borrower's wallet
+      const creditLine = new Contract(CREDIT_LINE_ADDRESS, CREDIT_LINE_ABI, signer);
+      const repayTx = await creditLine.repay(loanId, parsedAmount);
+      await repayTx.wait();
+
+      // 3. Notify backend to sync local state
+      fetch(apiUrl(`/api/credit/${target}/repay`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ loanId, amount: wei }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setRepayResult({ success: true, message: `Repaid ${repayAmount} USDt on Loan #${loanId}` });
-        setRepayAmount('');
-        setRepayLoanId(null);
-        fetchLoans();
-        checkCreditScore();
+        body: JSON.stringify({ loanId, amount: parsedAmount.toString(), onChainDone: true }),
+      }).catch(() => {});
+
+      // Refresh USDt balance
+      const newBal = await usdtContract.balanceOf(target);
+      setUsdtBal(formatUnits(newBal, 6));
+
+      setRepayResult({ success: true, message: `Repaid ${repayAmount} USDt on Loan #${loanId}` });
+      setRepayAmount('');
+      setRepayLoanId(null);
+      fetchLoans();
+      checkCreditScore();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('user rejected') || msg.includes('ACTION_REJECTED')) {
+        setRepayResult({ success: false, message: 'Transaction cancelled by user' });
+      } else if (msg.includes('exceeds balance') || msg.includes('insufficient')) {
+        setRepayResult({ success: false, message: 'Insufficient USDt balance' });
       } else {
-        setRepayResult({ success: false, message: data.error || 'Repayment failed' });
+        setRepayResult({ success: false, message: msg.slice(0, 120) });
       }
-    } catch {
-      setRepayResult({ success: false, message: 'Network error' });
     } finally {
       setIsRepaying(false);
     }
@@ -749,7 +780,19 @@ export default function WalletPage() {
                                      </div>
                                   ) : (
                                      <button
-                                        onClick={() => { setRepayLoanId(loan.id); setRepayResult(null); }}
+                                        onClick={async () => {
+                                          setRepayLoanId(loan.id);
+                                          setRepayResult(null);
+                                          // Auto-fill with exact amount due from on-chain
+                                          if (window.ethereum) {
+                                            try {
+                                              const prov = new BrowserProvider(window.ethereum);
+                                              const cl = new Contract(CREDIT_LINE_ADDRESS, CREDIT_LINE_ABI, prov);
+                                              const due = await cl.getAmountDue(loan.id);
+                                              if (due > 0n) setRepayAmount(formatUnits(due, 6));
+                                            } catch { setRepayAmount(formatUnits(BigInt(loan.totalDue || loan.principal), 6)); }
+                                          }
+                                        }}
                                         className="inline-flex items-center gap-1.5 text-sm font-semibold text-green-400 hover:text-green-300 transition-colors"
                                      >
                                         <ArrowUpCircle className="w-4 h-4" /> Repay This Loan

@@ -5,6 +5,7 @@
 
 import { ethers } from 'ethers';
 import type WDK from '@tetherto/wdk';
+import type { WdkAccount } from '../services/wdk';
 import { LLMClient } from '../services/LLMClient';
 import { predictDefault, type DefaultPrediction } from '../services/DefaultPredictor';
 import EventBus from '../orchestrator/EventBus';
@@ -21,6 +22,8 @@ import {
 import { saveCreditState, loadCreditState } from '../services/StatePersistence';
 import { sendWriteTx } from '../services/TransactionService';
 import { generateProof, verifyProof, getBestProvableTier } from '../services/ZKCreditProof';
+import type { RevenueTracker } from '../services/RevenueTracker';
+import type { DebtRestructuring } from '../services/DebtRestructuring';
 
 // LLM Configuration
 const CREDIT_SYSTEM_PROMPT = `You are the Credit Agent for AgentTreasury, an autonomous DAO CFO system.
@@ -76,7 +79,7 @@ const ERC20_IFACE = new ethers.Interface([
 export class CreditAgent {
   private status: AgentStatus = 'idle';
   private provider: ethers.Provider;
-  private wdkAccount: any;
+  private wdkAccount: WdkAccount;
   private creditContract: ethers.Contract;
   private llm: LLMClient;
   private config: AgentConfig;
@@ -87,12 +90,14 @@ export class CreditAgent {
   private borrowLocks: Set<string> = new Set();
   private pendingBorrowRequests: Array<{ address: string; amount: string; source: string; timestamp: number }> = [];
   private static readonly GRACE_PERIOD_SECONDS = 24 * 3600; // 24h grace before default
+  private revenueTracker: RevenueTracker | null = null;
+  private debtRestructuring: DebtRestructuring | null = null;
 
   constructor(
     config: AgentConfig,
     provider: ethers.Provider,
     _wdk: WDK,
-    wdkAccount: any,
+    wdkAccount: WdkAccount,
     llmClient: LLMClient,
   ) {
     this.config = config;
@@ -106,6 +111,16 @@ export class CreditAgent {
     );
 
     this.setupEventListeners();
+  }
+
+  /** Inject RevenueTracker (set from index.ts after construction) */
+  setRevenueTracker(tracker: RevenueTracker): void {
+    this.revenueTracker = tracker;
+  }
+
+  /** Inject DebtRestructuring (set from index.ts after construction) */
+  setDebtRestructuring(restructuring: DebtRestructuring): void {
+    this.debtRestructuring = restructuring;
   }
 
   /**
@@ -194,6 +209,9 @@ export class CreditAgent {
     try {
       // Check for due loans + autonomous repayment collection
       await this.checkDueLoans();
+
+      // Evaluate active loans for restructuring (ML-triggered)
+      await this.checkRestructuring();
 
       // Process autonomous lending decisions (borrow queue + proactive)
       await this.processAutonomousLending();
@@ -848,6 +866,48 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
   }
 
   /**
+   * Sync local state after borrower executed repay() on-chain directly from their wallet.
+   */
+  syncRepaymentLocal(loanId: number, amount: bigint): void {
+    const localLoan = this.loans.get(loanId);
+    if (!localLoan) return;
+
+    localLoan.repaid = (BigInt(localLoan.repaid) + amount).toString();
+    const due = BigInt(localLoan.totalDue) - amount;
+    localLoan.totalDue = (due > 0n ? due : 0n).toString();
+    const fullyRepaid = due <= 0n;
+    if (fullyRepaid) {
+      localLoan.active = false;
+    }
+
+    const borrower = localLoan.borrower;
+    const profile = this.profiles.get(borrower.toLowerCase());
+    if (profile && fullyRepaid) {
+      const principal = BigInt(localLoan.principal);
+      const borrowed = BigInt(profile.borrowed);
+      profile.borrowed = (borrowed > principal ? borrowed - principal : 0n).toString();
+      profile.available = (BigInt(profile.limit) - BigInt(profile.borrowed)).toString();
+    }
+
+    const decision: AgentDecision = {
+      id: `repay-sync-${Date.now()}`,
+      agentType: 'credit',
+      timestamp: Date.now(),
+      action: 'repay_loan',
+      reasoning: `Borrower repaid ${ethers.formatUnits(amount, 6)} USDt on loan #${loanId} (direct on-chain)${fullyRepaid ? ' — loan closed' : ''}`,
+      data: { loanId, amount: amount.toString(), borrower, fullyRepaid },
+      status: 'executed',
+    };
+    EventBus.emitEvent('credit:loan_repaid', 'credit', decision);
+
+    if (fullyRepaid) {
+      this.evaluateCredit(borrower).catch(() => {});
+    }
+
+    logger.info(`Synced repayment for loan ${loanId}`, { amount: amount.toString(), fullyRepaid });
+  }
+
+  /**
    * Check for due loans and mark defaults
    */
   async checkDueLoans(): Promise<void> {
@@ -1084,6 +1144,22 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       }
     });
 
+    // Listen for revenue-backed borrow requests
+    EventBus.subscribe('credit:revenue_borrow_requested', async (event) => {
+      const { agentAddress, amount } = event.payload as { agentAddress: string; amount: string };
+      if (agentAddress && amount) {
+        await this.processRevenueBackedBorrow(agentAddress, BigInt(amount));
+      }
+    });
+
+    // Listen for restructuring acceptance
+    EventBus.subscribe('credit:restructuring_accepted', async (event) => {
+      const { loanId, newDueDate, newRate, forgiveness } = event.payload as {
+        loanId: number; newDueDate: number; newRate: number; forgiveness: string;
+      };
+      this.applyRestructuring(loanId, newDueDate, newRate, forgiveness);
+    });
+
     // Listen for dialogue consensus actions (autonomous lending triggers)
     EventBus.subscribe('dialogue:consensus_action', async (event) => {
       const { action, params } = event.payload as { action: string; params?: Record<string, unknown> };
@@ -1214,6 +1290,188 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       }
       return { approved: false, amount: '0', reasoning: 'Score or available credit insufficient for proactive lending' };
     }
+  }
+
+  /**
+   * Evaluate active loans for restructuring (ML-triggered, LLM-negotiated).
+   * Called from the monitor loop. For each active loan, runs ML default prediction;
+   * if the probability exceeds the threshold, DebtRestructuring proposes new terms.
+   * Accepted proposals are applied to local loan state immediately.
+   */
+  private async checkRestructuring(): Promise<void> {
+    if (!this.debtRestructuring) return;
+
+    try {
+      for (const [loanId, loan] of this.loans) {
+        if (!loan.active) continue;
+
+        const profile = this.profiles.get(loan.borrower.toLowerCase()) ?? null;
+        const history = await this.fetchCreditHistory(loan.borrower);
+
+        // evaluateLoan runs ML + LLM internally; returns null if loan is healthy
+        const proposal = await this.debtRestructuring.evaluateLoan(loan, profile, history);
+
+        if (proposal) {
+          logger.info(`Restructuring proposed for loan #${loanId}`, {
+            probability: proposal.mlPrediction.probability,
+            newDueDate: proposal.proposedTerms.newDueDate,
+            newRate: proposal.proposedTerms.newRateBps,
+          });
+        }
+      }
+
+      // Auto-accept pending proposals (autonomous behavior)
+      const accepted = this.debtRestructuring.autoAcceptProposals();
+      for (const p of accepted) {
+        this.applyRestructuring(
+          p.originalLoanId,
+          p.proposedTerms.newDueDate,
+          p.proposedTerms.newRateBps,
+          p.proposedTerms.forgiveness,
+        );
+      }
+    } catch (error) {
+      logger.error('Restructuring check failed', { error });
+    }
+  }
+
+  /**
+   * Process a revenue-backed borrow request.
+   * Instead of using traditional credit limits, the loan is backed by projected future revenue.
+   */
+  async processRevenueBackedBorrow(agentAddress: string, amount: bigint): Promise<Loan | null> {
+    if (!this.revenueTracker) {
+      logger.warn('Revenue-backed borrow rejected — RevenueTracker not available');
+      return null;
+    }
+
+    const addrLower = agentAddress.toLowerCase();
+    if (this.borrowLocks.has(addrLower)) {
+      logger.warn(`Borrow already in progress for ${agentAddress}`);
+      return null;
+    }
+    this.borrowLocks.add(addrLower);
+
+    try {
+      const check = this.revenueTracker.canBorrowAgainstRevenue(agentAddress, amount);
+
+      if (!check.allowed) {
+        logger.info('Revenue-backed borrow rejected', { agentAddress, reason: check.reason });
+        EventBus.emitEvent('credit:revenue_borrow_rejected', 'credit', {
+          agentAddress, amount: amount.toString(), reason: check.reason,
+        });
+        return null;
+      }
+
+      // Revenue-backed loans get favorable terms: lower rate, longer duration
+      const rateBps = 300; // 3% — lower than standard (backed by revenue)
+      const durationDays = 60; // 60 days — longer repayment window
+      const now = Math.floor(Date.now() / 1000);
+
+      // Execute on-chain borrow
+      let txHash: string | undefined;
+      let onChainLoanId: number | undefined;
+      try {
+        const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowForCustom', [
+          agentAddress, amount, rateBps, durationDays * 86400,
+        ]);
+        txHash = await this.sendTx(this.config.creditLineAddress, data, `revenueBackedBorrow(${agentAddress})`);
+        const loanCount = await this.creditContract.loanCount();
+        onChainLoanId = Number(loanCount) - 1;
+      } catch (err) {
+        logger.error('On-chain revenue-backed borrow failed', { err: err instanceof Error ? err.message : String(err) });
+      }
+
+      let dueDate = now + durationDays * 86400;
+      if (onChainLoanId !== undefined) {
+        try {
+          const onChainLoan = await this.creditContract.loans(onChainLoanId);
+          dueDate = Number(onChainLoan.dueDate);
+        } catch { /* use calculated dueDate */ }
+      }
+
+      const profile = this.revenueTracker.getProfile(agentAddress);
+      const loanId = onChainLoanId ?? this.loans.size;
+      const loan: Loan = {
+        id: loanId,
+        borrower: agentAddress,
+        principal: amount.toString(),
+        interestRate: rateBps,
+        borrowedAt: now,
+        dueDate,
+        repaid: '0',
+        interest: '0',
+        totalDue: amount.toString(),
+        active: true,
+        loanType: 'revenue_backed',
+        revenueProjection: profile.projectedRevenue30d,
+      };
+      this.loans.set(loanId, loan);
+
+      // Update credit profile if exists
+      const creditProfile = this.profiles.get(addrLower);
+      if (creditProfile) {
+        creditProfile.borrowed = (BigInt(creditProfile.borrowed) + amount).toString();
+        creditProfile.available = (BigInt(creditProfile.limit) - BigInt(creditProfile.borrowed)).toString();
+        this.profiles.set(addrLower, creditProfile);
+      }
+
+      EventBus.emitEvent('credit:revenue_borrow_approved', 'credit', {
+        action: 'revenue_backed_borrow',
+        reasoning: `Revenue-backed loan approved: ${check.reason} | Utilization: ${(check.utilization * 100).toFixed(1)}%`,
+        data: {
+          agentAddress, amount: amount.toString(), loanId, rateBps, durationDays,
+          revenueCapacity: check.capacity, utilization: check.utilization,
+        },
+        txHash,
+        status: 'executed',
+      });
+
+      EventBus.emitEvent('treasury:disburse_requested', 'credit', {
+        to: agentAddress, amount: amount.toString(), reason: 'revenue_backed_loan',
+      });
+
+      logger.info('Revenue-backed borrow approved', {
+        agentAddress, amount: amount.toString(), loanId, capacity: check.capacity,
+      });
+
+      return loan;
+    } catch (error) {
+      logger.error('Revenue-backed borrow failed', { error });
+      return null;
+    } finally {
+      this.borrowLocks.delete(addrLower);
+    }
+  }
+
+  /**
+   * Apply restructured terms to a local loan (called after proposal acceptance).
+   * Updates dueDate, interestRate, and applies forgiveness to the repaid amount.
+   */
+  private applyRestructuring(loanId: number, newDueDate: number, newRateBps: number, forgiveness: string): void {
+    const loan = this.loans.get(loanId);
+    if (!loan || !loan.active) return;
+
+    const oldDueDate = loan.dueDate;
+    const oldRate = loan.interestRate;
+
+    loan.dueDate = newDueDate;
+    loan.interestRate = newRateBps;
+
+    // Apply forgiveness: reduce totalDue, increase repaid (as if partially forgiven)
+    const forgivenAmount = BigInt(forgiveness);
+    if (forgivenAmount > 0n) {
+      loan.repaid = (BigInt(loan.repaid) + forgivenAmount).toString();
+      const newTotalDue = BigInt(loan.totalDue) - forgivenAmount;
+      loan.totalDue = (newTotalDue > 0n ? newTotalDue : 0n).toString();
+    }
+
+    logger.info(`Restructuring applied to loan #${loanId}`, {
+      oldDueDate, newDueDate, oldRate, newRateBps,
+      forgiveness: forgiveness, borrower: loan.borrower,
+    });
+
+    this.remember('restructure_loan', `Loan #${loanId} restructured: rate ${oldRate}→${newRateBps}bps, due date extended, forgiveness ${ethers.formatUnits(forgiveness, 6)} USDt`);
   }
 
   /**

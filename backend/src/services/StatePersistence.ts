@@ -133,4 +133,24 @@ export function loadDialogues(): { dialogues: unknown[]; roundCount: number; sav
   return readJSON<{ dialogues: unknown[]; roundCount: number; savedAt: number }>('dialogues.json');
 }
 
+// ─── Revenue Tracker ───────────────────────────────────────────
+
+export function saveRevenueData(events: unknown[]): void {
+  atomicWrite('revenue-events.json', { events, savedAt: Date.now() });
+}
+
+export function loadRevenueData(): { events: unknown[]; savedAt: number } | null {
+  return readJSON<{ events: unknown[]; savedAt: number }>('revenue-events.json');
+}
+
+// ─── Debt Restructuring ───────────────────────────────────────
+
+export function saveRestructuringData(proposals: unknown[]): void {
+  atomicWrite('restructuring-proposals.json', { proposals, savedAt: Date.now() });
+}
+
+export function loadRestructuringData(): { proposals: unknown[]; savedAt: number } | null {
+  return readJSON<{ proposals: unknown[]; savedAt: number }>('restructuring-proposals.json');
+}
+
 logger.info(`StatePersistence: data directory → ${DATA_DIR}`);

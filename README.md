@@ -18,7 +18,7 @@ Built for **Tether Hackathon Galáctica: WDK Edition 1** (March 2–22, 2026)
 | **CreditLine** | [`0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0`](https://arbiscan.io/address/0x236AB6D30F70D7aB6c272aCB3b186D925Bcae1a0) |
 | **USDt (Arbitrum)** | [`0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`](https://arbiscan.io/address/0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9) |
 | **Aave V3 Pool** | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` |
-| **WDK Wallet** | `0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266` (AGENT_ROLE on both contracts) |
+| **WDK Wallet** | [`0xcF341c10f9173B6Fa4814f7a84b64653C25bEBed`](https://arbiscan.io/address/0xcF341c10f9173B6Fa4814f7a84b64653C25bEBed) (AGENT_ROLE + EXECUTOR_ROLE on both contracts) |
 | **Deployer** | `0xE9a30BCbdE263eBfebB24768a3f9642044a9804c` (DEFAULT_ADMIN_ROLE) |
 
 ### 🧑‍⚖️ For Judges — Quick Evaluation
@@ -50,9 +50,18 @@ curl -X POST https://treasury.proceedgate.dev/api/credit/0x3C44CdDdB6a900fa2b585
 npm run contracts:test
 ```
 
-**5. WDK integration proof**: All write transactions go through WDK as primary signer (`0xf39Fd...`). On-chain AGENT_ROLE grants:
-- Vault: [TX 0xbf99878...](https://arbiscan.io/tx/0xbf99878ac5dcaae548d23a371c4bbbc6e75d9685faa3a562a921dd1d4f084db6)
-- Credit: [TX 0x3b1d9e4...](https://arbiscan.io/tx/0x3b1d9e42b9ea6ac2c01b08905edccb52702399a9c9abbb8dba07443120c2a606)
+**5. WDK on-chain proof** (see [`ONCHAIN_PROOF.md`](ONCHAIN_PROOF.md) for full details):
+
+All write transactions go through WDK as primary signer (`0xcF34...`). Verified on Arbitrum One mainnet:
+
+| Proof | Transaction |
+|-------|-------------|
+| AGENT_ROLE grant (Vault) | [`0x26bb7311...`](https://arbiscan.io/tx/0x26bb7311729c8e50a7ffad327932c76781d4d8dd631d25c631a51d4432a6eb02) |
+| EXECUTOR_ROLE grant (Vault) | [`0x8ecf85df...`](https://arbiscan.io/tx/0x8ecf85df9f9a15f73a67b193052e044016d7da93305e27cb3d0fc4f2ed603ee3) |
+| AGENT_ROLE grant (Credit) | [`0x03ea9eb1...`](https://arbiscan.io/tx/0x03ea9eb141788f3cf12d96073186c63db5efa966273a7aa8d0d7468f8da02824) |
+| EXECUTOR_ROLE grant (Credit) | [`0x80902fa2...`](https://arbiscan.io/tx/0x80902fa26e34434b594f54ef8fa1bdf48c957cbbb086fe61743c36eec64a0d2e) |
+| USDt approve → Aave V3 | [`0x46f7966b...`](https://arbiscan.io/tx/0x46f7966bd2055e22273e6d3870232a2e630612d57b8e629ea8225585fd9d4bdc) |
+| USDt supply → Aave V3 | [`0x2cccf89d...`](https://arbiscan.io/tx/0x2cccf89dfe2c17599dd1644e8e92c265d8218c9e3f5d730fe61a871b4c6d7152) |
 
 ---
 
@@ -98,6 +107,8 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 - ✅ **Inter-agent lending** — Credit Agent can borrow capital from Treasury Agent's pool via EventBus (`credit:capital_request` → `treasury:capital_allocated`). Treasury evaluates and caps at 20% of balance per request. See `backend/src/services/InterAgentLending.ts`
 - ✅ **ML default prediction** — Logistic regression model predicts probability of loan default (0–100%) using 7 features: txCount, volume, repaymentRate, accountAge, creditScore, utilizationRate, defaultHistory. Critical risk (>60%) auto-blocks loans before LLM evaluation. See `backend/src/services/DefaultPredictor.ts`
 - ✅ **ZK credit proofs** — Borrowers can prove their credit score meets a tier threshold (e.g., "≥800 = Excellent") without revealing the exact score. Uses SHA-256 commitments + Fiat-Shamir bit-decomposition range proofs. See `backend/src/services/ZKCreditProof.ts`
+- ✅ **Revenue-backed lending** — AI agents borrow against projected future earnings (invoice factoring for the agent economy). Tracks 24h/7d/30d rolling revenue, velocity trends, and computes borrow capacity at 50% of projected 30d revenue. See `backend/src/services/RevenueTracker.ts`
+- ✅ **Autonomous debt restructuring** — ML-triggered, LLM-negotiated loan term modification. When `DefaultPredictor` flags >50% default probability, `DebtRestructuring` proposes new terms (extend duration, reduce rate, partial forgiveness, tranches). Auto-accepted for autonomous operation. See `backend/src/services/DebtRestructuring.ts`
 
 ### Key Integrations
 
@@ -139,7 +150,9 @@ agent-treasury/
 │       │   ├── LLMClient.ts      # Failover LLM wrapper (primary + fallback)
 │       │   ├── DefaultPredictor.ts    # ML logistic regression for default prediction
 │       │   ├── InterAgentLending.ts   # Inter-agent capital allocation via EventBus
-│       │   └── ZKCreditProof.ts       # ZK range proofs for credit tier privacy
+│       │   ├── ZKCreditProof.ts       # ZK range proofs for credit tier privacy
+│       │   ├── RevenueTracker.ts      # Revenue-backed lending (agent earnings tracking)
+│       │   └── DebtRestructuring.ts   # Autonomous debt restructuring (ML+LLM)
 │       ├── mcp-server.ts         # MCP server (stdio, 15 tools)
 │       └── index.ts              # API + WebSocket server
 ├── frontend/                     # React 18 + Vite + Tailwind
@@ -393,6 +406,13 @@ OpenClaw config (`openclaw.config.json`):
 | `/api/credit/verify-proof` | POST | Verify a ZK credit proof |
 | `/api/inter-agent/lending` | GET | Inter-agent lending status + loans |
 | `/api/inter-agent/request-capital` | POST | Credit Agent requests capital from Treasury |
+| `/api/inter-agent/harvest` | POST | Trigger yield harvest → auto debt service |
+| `/api/revenue/summary` | GET | Revenue tracking summary (all agents) |
+| `/api/revenue/:agent/profile` | GET | Revenue profile for a specific agent |
+| `/api/revenue/:agent/simulate` | POST | Simulate revenue events (demo) |
+| `/api/revenue/:agent/borrow` | POST | Borrow against projected revenue |
+| `/api/restructuring/proposals` | GET | Debt restructuring proposals |
+| `/api/restructuring/:id/accept` | POST | Accept a restructuring proposal |
 | `/ws` | WS | Real-time events (decisions, dialogues, alerts) |
 
 ## Testing
@@ -469,6 +489,34 @@ Borrowers can prove their credit score meets a minimum tier threshold (e.g., "Ex
 The verifier confirms the proof is structurally valid, the tier threshold is recognized, and the Fiat-Shamir challenge is consistent — without learning the borrower's exact credit score.
 
 **API**: `POST /api/credit/:address/zk-proof` (generate) · `POST /api/credit/verify-proof` (verify)
+
+### Revenue-Backed Lending (Innovation)
+AI agents can borrow against their projected future earnings — similar to invoice factoring in TradFi ($3.5T market) but for the AI agent economy. Nobody in DeFi or the AI agent ecosystem does this today.
+
+The `RevenueTracker` service monitors agent revenue streams (task completions, yield harvests, inter-agent payments, service fees) and computes:
+- **Rolling revenue**: 24h / 7d / 30d windows
+- **Revenue velocity**: trend indicator (-1 to +1) showing acceleration or deceleration
+- **Revenue consistency**: how regular the income stream is (0–1)
+- **Borrow capacity**: 50% of projected 30d revenue (conservative)
+
+Revenue-backed loans get favorable terms: 3% rate (vs standard 5-15%), 60-day duration. Minimum 3 revenue events + consistency > 0.1 required.
+
+**API**: `GET /api/revenue/summary` · `GET /api/revenue/:agent/profile` · `POST /api/revenue/:agent/borrow`
+
+### Autonomous Debt Restructuring (Innovation)
+When a loan is at risk of default, the system autonomously restructures it — no human intervention needed. This is the first implementation of autonomous debt restructuring in the AI agent economy.
+
+Flow: `CreditAgent monitor loop` → `DefaultPredictor` flags >50% default probability → `DebtRestructuring` uses LLM to negotiate new terms → auto-accept → apply to loan.
+
+Restructuring options (LLM-negotiated):
+- **Extend duration**: 7–90 additional days
+- **Reduce interest rate**: minimum 100bps
+- **Partial forgiveness**: up to 20% of principal
+- **Split into tranches**: 1–4 payment tranches
+
+Key principle: Getting 80% back through restructuring is better than getting 0% from a default.
+
+**API**: `GET /api/restructuring/proposals` · `POST /api/restructuring/:id/accept`
 
 ## Design Decisions
 

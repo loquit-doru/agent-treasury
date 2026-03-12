@@ -125,7 +125,7 @@ export default function Analytics() {
   // 4. Credit System Stats
   let totalLent = 0;
   let totalRepaid = 0;
-  let totalDefaulted = 0; // Simulated defaults for chart
+  let totalDefaulted = 0; // Compute defaults from real loan data
   
   loans.forEach(l => {
      totalLent += Number(l.principal) / 1e6;
