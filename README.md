@@ -79,9 +79,9 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 ### Hackathon Track Alignment
 
 #### 🏦 Lending Bot — Must Haves ✅
-- ✅ Agent makes lending decisions **without human prompts** (credit scoring + LLM evaluation)
+- ✅ Agent makes lending decisions **without human prompts** — idle capital detection reads vault USDt balance, lowers score threshold, and proactively extends credit
 - ✅ All transactions settle **on-chain using USDt** (Arbitrum One mainnet)
-- ✅ Agent **autonomously tracks and collects repayments** (30-day terms, auto-default)
+- ✅ Agent **autonomously tracks and collects repayments** with tiered penalty interest (5%/10%/15%) and credit freeze on default
 
 #### 🏦 Lending Bot — Nice to Haves ✅
 - ✅ **On-chain history for credit scores** — formula uses txCount, volume, repaid loans, defaults, account age
@@ -109,6 +109,9 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 - ✅ **ZK credit proofs** — Borrowers can prove their credit score meets a tier threshold (e.g., "≥800 = Excellent") without revealing the exact score. Uses SHA-256 commitments + Fiat-Shamir bit-decomposition range proofs. See `backend/src/services/ZKCreditProof.ts`
 - ✅ **Revenue-backed lending** — AI agents borrow against projected future earnings (invoice factoring for the agent economy). Tracks 24h/7d/30d rolling revenue, velocity trends, and computes borrow capacity at 50% of projected 30d revenue. See `backend/src/services/RevenueTracker.ts`
 - ✅ **Autonomous debt restructuring** — ML-triggered, LLM-negotiated loan term modification. When `DefaultPredictor` flags >50% default probability, `DebtRestructuring` proposes new terms (extend duration, reduce rate, partial forgiveness, tranches). Auto-accepted for autonomous operation. See `backend/src/services/DebtRestructuring.ts`
+- ✅ **Idle capital detection + proactive lending** — Agent reads vault USDt balance on-chain, detects idle capital (>500 USDt), lowers score threshold (700→600), and extends up to 3 proactive loans per cycle in aggressive mode (>2000 USDt idle)
+- ✅ **Tiered penalty interest** — Overdue loans accrue penalty: 5% (1-7d), 10% (8-14d), 15% (15+d). Credit score reduces -10/day during grace period
+- ✅ **Credit freeze on default** — Defaulted borrowers get `creditFrozen=true`, score -200, available credit zeroed. Must resolve defaults before new loans
 
 ### Key Integrations
 
@@ -381,6 +384,8 @@ OpenClaw config (`openclaw.config.json`):
 - 3 tiers: Excellent (800+, 5k, 5%), Good (600+, 2k, 10%), Poor (<600, 500, 15%)
 - Interest: `(principal * rate * time) / (365 days * 10000)`
 - 30-day loan terms, automatic default detection
+- Penalty interest tiers: +5% (1-7d overdue), +10% (8-14d), +15% (15+d)
+- Credit freeze: defaulted borrowers blocked from new loans until resolved
 
 ## API Endpoints
 
@@ -517,6 +522,28 @@ Restructuring options (LLM-negotiated):
 Key principle: Getting 80% back through restructuring is better than getting 0% from a default.
 
 **API**: `GET /api/restructuring/proposals` · `POST /api/restructuring/:id/accept`
+
+### Idle Capital Detection & Proactive Lending
+The Credit Agent reads the vault's USDt balance on-chain every monitoring cycle (120s) and detects idle capital — funds sitting in the treasury that could be earning interest through loans.
+
+| Idle Capital | Behavior | Min Score | Max Proactive Loans/Cycle |
+| --- | --- | --- | --- |
+| < 500 USDt | Standard mode | 700 | 1 |
+| 500–2000 USDt | Proactive mode | 650 | 1 |
+| > 2000 USDt | Aggressive mode | 600 | 3 |
+
+This is the core "agent decides without human prompts" feature: `idle capital → search borrowers → evaluate risk → lend`.
+
+### Penalty Interest & Credit Freeze
+Overdue loans accrue tiered penalty interest on top of the base rate:
+
+| Days Overdue | Penalty Rate | Score Impact |
+| --- | --- | --- |
+| 1–7 | +5% annualized | -10/day (max -70) |
+| 8–14 | +10% annualized | -10/day (max -140) |
+| 15+ (grace expires) | **Default** | -200, credit frozen |
+
+After a loan defaults, the borrower's credit is **frozen** — `available = 0`, no new loans possible until the default is resolved. This protects the treasury from repeat offenders.
 
 ## Design Decisions
 
