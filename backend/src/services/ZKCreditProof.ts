@@ -24,10 +24,12 @@
 
 import { createHash, randomBytes } from 'crypto';
 import logger from '../utils/logger';
+import { isProofUsed, markProofUsed, cleanExpiredProofs } from './StateDB';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ZKCreditProof {
+  proofId: string;               // unique ID for replay prevention
   commitment: string;            // SHA-256(score || nonce) — NOT opened
   tierThreshold: number;         // minimum score for the tier
   tierName: string;
@@ -147,6 +149,7 @@ export function generateProof(
   const challenge = fiatShamirChallenge(commitment, deltaCommitment, bitCommitments);
 
   const proof: ZKCreditProof = {
+    proofId: randomBytes(16).toString('hex'),
     commitment,
     tierThreshold,
     tierName,
@@ -201,6 +204,11 @@ export function verifyProof(proof: ZKCreditProof): ProofVerificationResult {
     return fail(proof, 'Proof expired', now);
   }
 
+  // 1b. Replay prevention — each proof can only be verified once
+  if (isProofUsed(proof.proofId)) {
+    return fail(proof, 'Proof already used — replay detected', now);
+  }
+
   // 2. Check tier threshold validity
   const validTier = ZK_TIERS.find(t => t.minScore === proof.tierThreshold && t.name === proof.tierName);
   if (!validTier) {
@@ -246,11 +254,19 @@ export function verifyProof(proof: ZKCreditProof): ProofVerificationResult {
   }
 
   // All checks passed — proof is sound
+  // Mark proof as used to prevent replay
+  markProofUsed(proof.proofId, proof.tierName, now, proof.expiresAt);
+
+  // Periodically clean expired proofs (1% chance per verification)
+  if (Math.random() < 0.01) {
+    cleanExpiredProofs();
+  }
+
   return {
     valid: true,
     tierName: proof.tierName,
     tierThreshold: proof.tierThreshold,
-    reason: `Verified: credit score meets ${proof.tierName} tier (≥${proof.tierThreshold}) — delta=${delta}, proof cryptographically sound`,
+    reason: `Verified: credit score meets ${proof.tierName} tier (≥${proof.tierThreshold}) — delta=${delta}, proof cryptographically sound (replay-protected)`,
     verifiedAt: now,
   };
 }

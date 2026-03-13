@@ -14,6 +14,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import logger from '../utils/logger';
+import type { CreditProfile, Loan } from '../types';
+import {
+  syncAllProfiles, syncAllLoans, syncYieldPositions, insertSnapshot,
+} from './StateDB';
 
 const DATA_DIR = path.resolve(__dirname, '../../data');
 
@@ -75,6 +79,15 @@ export interface PersistedTreasuryState {
 
 export function saveTreasuryState(state: Omit<PersistedTreasuryState, 'savedAt'>): void {
   atomicWrite('treasury-state.json', { ...state, savedAt: Date.now() });
+  // Sync to SQLite
+  try {
+    syncYieldPositions(state.yieldPositions);
+    for (const snap of state.historySnapshots.slice(-5)) {
+      insertSnapshot(snap.timestamp, snap.balance, snap.volume, snap.yieldTotal);
+    }
+  } catch (err) {
+    logger.warn('SQLite sync failed for treasury state', { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export function loadTreasuryState(): PersistedTreasuryState | null {
@@ -97,6 +110,22 @@ export interface PersistedCreditState {
 
 export function saveCreditState(state: Omit<PersistedCreditState, 'savedAt'>): void {
   atomicWrite('credit-state.json', { ...state, savedAt: Date.now() });
+  // Sync to SQLite
+  try {
+    const profileMap = new Map<string, CreditProfile>();
+    for (const [key, val] of state.profiles) {
+      profileMap.set(key, val as CreditProfile);
+    }
+    syncAllProfiles(profileMap);
+
+    const loanMap = new Map<number, Loan>();
+    for (const [id, val] of state.loans) {
+      loanMap.set(id, val as Loan);
+    }
+    syncAllLoans(loanMap);
+  } catch (err) {
+    logger.warn('SQLite sync failed for credit state', { error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 export function loadCreditState(): PersistedCreditState | null {
@@ -154,3 +183,12 @@ export function loadRestructuringData(): { proposals: unknown[]; savedAt: number
 }
 
 logger.info(`StatePersistence: data directory → ${DATA_DIR}`);
+
+// Re-export SQLite functions for direct access
+export {
+  getDB, closeDB,
+  loadAllProfiles as loadProfilesFromDB,
+  loadAllLoans as loadLoansFromDB,
+  loadYieldPositions as loadYieldFromDB,
+  loadSnapshots as loadSnapshotsFromDB,
+} from './StateDB';
