@@ -106,7 +106,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 #### 🏦 Lending Bot — Bonuses ✅
 - ✅ **Inter-agent lending** — Credit Agent can borrow capital from Treasury Agent's pool via EventBus (`credit:capital_request` → `treasury:capital_allocated`). Treasury evaluates and caps at 20% of balance per request. See `backend/src/services/InterAgentLending.ts`
 - ✅ **ML default prediction** — Logistic regression model predicts probability of loan default (0–100%) using 7 features: txCount, volume, repaymentRate, accountAge, creditScore, utilizationRate, defaultHistory. Critical risk (>60%) auto-blocks loans before LLM evaluation. See `backend/src/services/DefaultPredictor.ts`
-- ✅ **ZK credit proofs** — Borrowers can prove their credit score meets a tier threshold (e.g., "≥800 = Excellent") without revealing the exact score. Uses SHA-256 commitments + Fiat-Shamir bit-decomposition range proofs. See `backend/src/services/ZKCreditProof.ts`
+- ✅ **ZK credit proofs** — Borrowers can prove their credit score meets a tier threshold (e.g., "≥800 = Excellent") without revealing the exact score. Uses SHA-256 commitments + Fiat-Shamir bit-decomposition range proofs + replay prevention (each proof has a unique ID, used proofs tracked in SQLite). See `backend/src/services/ZKCreditProof.ts`
 - ✅ **Revenue-backed lending** — AI agents borrow against projected future earnings (invoice factoring for the agent economy). Tracks 24h/7d/30d rolling revenue, velocity trends, and computes borrow capacity at 50% of projected 30d revenue. See `backend/src/services/RevenueTracker.ts`
 - ✅ **Autonomous debt restructuring** — ML-triggered, LLM-negotiated loan term modification. When `DefaultPredictor` flags >50% default probability, `DebtRestructuring` proposes new terms (extend duration, reduce rate, partial forgiveness, tranches). Auto-accepted for autonomous operation. See `backend/src/services/DebtRestructuring.ts`
 - ✅ **Idle capital detection + proactive lending** — Agent reads vault USDt balance on-chain, detects idle capital (>500 USDt), lowers score threshold (700→600), and extends up to 3 proactive loans per cycle in aggressive mode (>2000 USDt idle)
@@ -124,6 +124,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 | **Failover LLM** (configurable) | Any OpenAI-compatible provider — auto-switches on 429/5xx |
 | **MCP Server** | 15 tools for external agent access (stdio transport) |
 | **Ethers.js v6** | Read-only contract interactions |
+| **SQLite (WAL)** | Persistent state: loans, profiles, decisions, ZK proof log (`better-sqlite3`) |
 
 ## Architecture
 
@@ -155,7 +156,9 @@ agent-treasury/
 │       │   ├── InterAgentLending.ts   # Inter-agent capital allocation via EventBus
 │       │   ├── ZKCreditProof.ts       # ZK range proofs for credit tier privacy
 │       │   ├── RevenueTracker.ts      # Revenue-backed lending (agent earnings tracking)
-│       │   └── DebtRestructuring.ts   # Autonomous debt restructuring (ML+LLM)
+│       │   ├── DebtRestructuring.ts   # Autonomous debt restructuring (ML+LLM)
+│       │   ├── StateDB.ts             # SQLite (WAL) persistence layer
+│       │   └── StatePersistence.ts    # Dual-write: JSON + SQLite
 │       ├── mcp-server.ts         # MCP server (stdio, 15 tools)
 │       └── index.ts              # API + WebSocket server
 ├── frontend/                     # React 18 + Vite + Tailwind
@@ -391,7 +394,8 @@ OpenClaw config (`openclaw.config.json`):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check + agent status |
+| `/health` | GET | Health check + agent status + persistence engine |
+| `/api/db/stats` | GET | SQLite database statistics (table row counts) |
 | `/api/dashboard` | GET | Full dashboard data (treasury, loans, decisions, dialogues) |
 | `/api/treasury` | GET | Treasury state |
 | `/api/treasury/sync` | POST | Force on-chain sync |
@@ -493,6 +497,8 @@ Borrowers can prove their credit score meets a minimum tier threshold (e.g., "Ex
 
 The verifier confirms the proof is structurally valid, the tier threshold is recognized, and the Fiat-Shamir challenge is consistent — without learning the borrower's exact credit score.
 
+**Replay prevention**: Each proof gets a unique `proofId` (128-bit random). Used proofs are stored in SQLite (`zk_proof_log` table). Attempting to verify the same proof twice returns `"Proof already used — replay detected"`. Expired proofs are cleaned up probabilistically.
+
 **API**: `POST /api/credit/:address/zk-proof` (generate) · `POST /api/credit/verify-proof` (verify)
 
 ### Revenue-Backed Lending (Innovation)
@@ -562,11 +568,11 @@ Agents communicate through a pub/sub EventBus rather than direct method calls. T
 ## Known Limitations
 
 - **Aave yield may fail on local Anvil fork** — `TreasuryVault: protocol not allowed` if Aave protocol address isn't allowlisted on-chain. Works correctly on Arbitrum One with proper setup.
-- **State persistence is file-based** — Agent decisions, dialogue rounds, and credit profiles are persisted to `backend/data/*.json`. Durable across restarts but not suitable for multi-instance deployments. A natural next step would be SQLite or Postgres.
+- **Dual persistence (JSON + SQLite)** — Agent state is persisted to both `backend/data/*.json` (backward compat) and `backend/data/agent-treasury.db` (SQLite WAL mode). SQLite provides ACID transactions, crash safety, and query capability. Check `GET /api/db/stats` for live table counts.
 - **Single-node deployment** — Not designed for horizontal scaling. One backend instance manages both agents.
 - **WDK address differs from deployer** — WDK derives `0xf39Fd...` while deployer is `0xE9a30...`. Both have `AGENT_ROLE` on-chain. WDK is primary signer, ethers is fallback.
 - **Deployed on Arbitrum One mainnet** — Production deployment with real USDt (16 USDt in vault).
-- **ZK proofs are hash-based** — Uses SHA-256 commitments + Fiat-Shamir, not zk-SNARKs. The verifier learns `delta = score - threshold` (bounding the score range). Full privacy would require Circom + snarkjs.
+- **ZK proofs are hash-based** — Uses SHA-256 commitments + Fiat-Shamir, not zk-SNARKs. The verifier learns `delta = score - threshold` (bounding the score range). Full privacy would require Circom + snarkjs. Replay prevention is enforced via SQLite proof log.
 - **Groq rate limits** — Free tier has 100K tokens/day. Agents auto-fallback to deterministic logic on 429 errors.
 
 ## License
