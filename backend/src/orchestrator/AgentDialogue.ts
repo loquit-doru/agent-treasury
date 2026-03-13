@@ -17,34 +17,44 @@ import type { AgentConfig } from '../types';
 import { ethers } from 'ethers';
 import { saveDialogues, loadDialogues } from '../services/StatePersistence';
 
-// Dialogue topics rotate each cycle
-const DIALOGUE_TOPICS = [
-  {
+// Topic library — selected dynamically based on current system state
+const TOPIC_LIBRARY: Record<string, { id: string; prompt: string; context: string }> = {
+  capital_allocation: {
     id: 'capital_allocation',
     prompt: 'How should we allocate treasury capital between yield farming and lending reserves?',
     context: 'Capital allocation strategy — balance between earning yield and maintaining liquidity for borrowers.',
   },
-  {
+  risk_review: {
     id: 'risk_review',
     prompt: 'What are the current risk factors and how should we adjust our exposure?',
     context: 'Joint risk assessment — combining treasury risk with credit portfolio risk.',
   },
-  {
+  yield_vs_lending: {
     id: 'yield_vs_lending',
     prompt: 'Should we increase yield positions or reserve more for lending operations?',
     context: 'Opportunity cost analysis — yield farming returns vs lending interest income.',
   },
-  {
+  emergency_preparedness: {
     id: 'emergency_preparedness',
     prompt: 'Are we prepared for a sudden spike in withdrawals or loan defaults?',
     context: 'Stress testing — evaluate liquidity buffers and worst-case scenarios.',
   },
-  {
+  portfolio_health: {
     id: 'portfolio_health',
     prompt: 'How healthy is our overall portfolio and what adjustments should we make?',
     context: 'Holistic portfolio review — treasury health + credit book quality.',
   },
-];
+  default_response: {
+    id: 'default_response',
+    prompt: 'We have recent loan defaults. How should we respond — tighten criteria, pursue recovery, or restructure?',
+    context: 'Default management — coordinated response to loans that have gone past due.',
+  },
+  idle_capital: {
+    id: 'idle_capital',
+    prompt: 'Significant idle capital detected. Should we deploy it into yield, proactive lending, or hold as buffer?',
+    context: 'Idle capital deployment — treasury has excess funds not earning returns.',
+  },
+};
 
 interface DialogueTurn {
   speaker: 'treasury' | 'credit' | 'risk' | 'consensus';
@@ -128,10 +138,54 @@ export class AgentDialogue {
   }
 
   /**
+   * Select dialogue topic based on current system state.
+   * Prioritizes urgent topics (defaults, idle capital) over routine reviews.
+   */
+  private selectTopicByState(): { id: string; prompt: string; context: string } {
+    const activeLoans = this.creditAgent.getAllActiveLoans();
+    const overdueLoans = activeLoans.filter(l => l.dueDate * 1000 < Date.now());
+    const treasuryState = this.treasuryAgent.getState();
+    const yieldPositions = treasuryState?.yieldPositions || [];
+
+    // Priority 1: Recent defaults → discuss response
+    const frozenLoans = activeLoans.filter(l => l.creditFrozen);
+    if (frozenLoans.length > 0 || overdueLoans.length > 0) {
+      return TOPIC_LIBRARY.default_response;
+    }
+
+    // Priority 2: High idle capital → discuss deployment
+    if (treasuryState) {
+      const balance = Number(treasuryState.balance) / 1e6;
+      const totalLent = activeLoans.reduce(
+        (sum, l) => sum + Number(l.principal) / 1e6, 0
+      );
+      const idle = balance - totalLent;
+      if (idle > 500) {
+        return TOPIC_LIBRARY.idle_capital;
+      }
+    }
+
+    // Priority 3: No yield positions → discuss yield vs lending
+    if (yieldPositions.length === 0) {
+      return TOPIC_LIBRARY.yield_vs_lending;
+    }
+
+    // Priority 4: Many active loans → discuss risk
+    if (activeLoans.length >= 3) {
+      return TOPIC_LIBRARY.risk_review;
+    }
+
+    // Rotate through remaining topics based on round count
+    const routineTopics = ['capital_allocation', 'portfolio_health', 'emergency_preparedness'];
+    const idx = this.roundCount % routineTopics.length;
+    return TOPIC_LIBRARY[routineTopics[idx]];
+  }
+
+  /**
    * Run a single dialogue round between the two agents
    */
   async runDialogueRound(): Promise<void> {
-    const topic = DIALOGUE_TOPICS[this.roundCount % DIALOGUE_TOPICS.length];
+    const topic = this.selectTopicByState();
     this.roundCount++;
 
     const turns: DialogueTurn[] = [];
@@ -334,7 +388,7 @@ export class AgentDialogue {
    */
   private async agentSpeak(
     speaker: 'treasury' | 'credit' | 'risk',
-    topic: typeof DIALOGUE_TOPICS[0],
+    topic: { id: string; prompt: string; context: string },
     stateContext: string,
     previousTurns: DialogueTurn[],
   ): Promise<string> {
@@ -385,7 +439,7 @@ ${conversationHistory ? `Conversation so far:\n${conversationHistory}\n\nYour re
    * Synthesize consensus from the dialogue
    */
   private async synthesizeConsensus(
-    topic: typeof DIALOGUE_TOPICS[0],
+    topic: { id: string; prompt: string; context: string },
     stateContext: string,
     turns: DialogueTurn[],
   ): Promise<string> {
@@ -473,6 +527,8 @@ Write a 1-2 sentence consensus decision that all three agents would agree on. Be
         yield_vs_lending: 'Yield positions are generating stable returns. I suggest keeping current allocation unless lending demand increases significantly.',
         emergency_preparedness: 'We have sufficient liquid reserves to handle a 30% surge in withdrawal requests. Emergency pause is ready if needed.',
         portfolio_health: 'Portfolio is healthy with diversified yield positions. No concentration risk detected in current allocations.',
+        default_response: 'We need to tighten disbursement criteria immediately. I am pausing new yield deployments until we recover defaulted capital.',
+        idle_capital: 'Idle capital is earning nothing. I propose deploying 50% into Aave V3 for low-risk yield while keeping 50% liquid for lending.',
       };
       return messages[topic] || 'Treasury operations are stable. No concerns at this time.';
     } else if (speaker === 'credit') {
@@ -482,6 +538,8 @@ Write a 1-2 sentence consensus decision that all three agents would agree on. Be
         yield_vs_lending: 'Lending interest rates are competitive. If we see more borrower applications, we may need Treasury to reduce yield positions to fund loans.',
         emergency_preparedness: 'All loans have adequate collateral coverage. Default probability across the portfolio is below 5%.',
         portfolio_health: 'Credit book quality is strong — no delinquencies. I recommend opening capacity for new prime borrowers.',
+        default_response: 'I am freezing credit lines for defaulted borrowers and initiating debt restructuring. We should increase minimum credit score requirements.',
+        idle_capital: 'We have qualified borrowers waiting. I recommend allocating idle capital to proactive lending at competitive rates before parking in yield.',
       };
       return messages[topic] || 'Credit operations are stable. All loans performing as expected.';
     } else {
@@ -491,6 +549,8 @@ Write a 1-2 sentence consensus decision that all three agents would agree on. Be
         yield_vs_lending: 'Both sides make valid points, but neither addresses tail risk. I recommend a 10% emergency buffer that neither yield nor lending can touch.',
         emergency_preparedness: 'Our current buffers assume normal market conditions. In a black swan event, correlated defaults could hit both yield and credit simultaneously.',
         portfolio_health: 'The portfolio appears stable on the surface, but I want to flag that our single-protocol dependency on Aave is a systemic risk factor.',
+        default_response: 'Defaults signal systemic weakness. I recommend a full portfolio stress test before approving any new loans. We should also review our ML model thresholds.',
+        idle_capital: 'While idle capital is inefficient, deploying it aggressively during uncertain conditions increases risk. Start with a small pilot allocation.',
       };
       return messages[topic] || 'From a compliance perspective, I advise maintaining conservative risk parameters until market conditions stabilize.';
     }

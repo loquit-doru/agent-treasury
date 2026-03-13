@@ -267,31 +267,26 @@ export class TreasuryAgent {
   }
 
   /**
-   * Seed 7 days of realistic history based on current real state.
-   * Uses deterministic progression for reproducible demo charts.
-   * After startup, real snapshots from syncState() accumulate naturally.
+   * Seed a single real snapshot from current on-chain state.
+   * History accumulates naturally from syncState() cycles — no fake data.
    */
   private seedHistoryFromCurrentState(): void {
-    if (this.historySnapshots.length > 7) return; // already has data
-    const now = Date.now();
-    const currentBal = this.lastState ? Number(this.lastState.balance) / 1e6 : 16;
-    const currentVol = this.lastState ? Number(this.lastState.dailyVolume) / 1e6 : 1;
+    if (this.historySnapshots.length > 0) return; // already has data
+    if (!this.lastState) return; // no on-chain state yet — wait for first sync
+
+    const currentBal = Number(this.lastState.balance) / 1e6;
+    const currentVol = Number(this.lastState.dailyVolume) / 1e6;
     const yieldTotal = this.yieldPositions.reduce(
       (sum, p) => sum + Number(p.amount) / 1e6, 0
     );
 
-    // Generate one point per day for the past 7 days using deterministic progression
-    for (let d = 6; d >= 0; d--) {
-      const ts = now - d * 86400_000;
-      const dayFactor = (7 - d) / 7; // 0.14 → 1.0
-      this.historySnapshots.push({
-        timestamp: ts,
-        balance: Math.round(currentBal * (0.82 + dayFactor * 0.18)),
-        volume: Math.round(currentVol * (0.4 + dayFactor * 0.6)),
-        yieldTotal: Math.round(yieldTotal * (0.3 + dayFactor * 0.7)),
-      });
-    }
-    logger.info('Seeded 7-day treasury history from real state');
+    this.historySnapshots.push({
+      timestamp: Date.now(),
+      balance: Math.round(currentBal),
+      volume: Math.round(currentVol),
+      yieldTotal: Math.round(yieldTotal),
+    });
+    logger.info('Initial treasury snapshot from on-chain state', { balance: currentBal, volume: currentVol, yieldTotal });
   }
 
   /**
@@ -557,12 +552,9 @@ export class TreasuryAgent {
       logger.debug('On-chain Aave V3 query failed', { err });
     }
 
-    // 3. Deterministic fallback (last resort)
+    // 3. No fallback — if no live on-chain data, return empty (no fake APY)
     if (opportunities.length === 0) {
-      logger.debug('Using deterministic yield fallback — no live data available');
-      opportunities.push(
-        { protocol: 'aave', apy: 4.2, tvl: '1200000000', risk: 'low' },
-      );
+      logger.info('No live yield data available — skipping yield investment this cycle');
     }
 
     return opportunities;
