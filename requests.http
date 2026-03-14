@@ -64,6 +64,35 @@ Content-Type: application/json
 GET {{base}}/api/yield/opportunities
 
 ### Invest in yield
+
+### ==================== Cross-Chain Bridge ====================
+
+### Bridge status — shows active bridges, totals, last scan
+GET {{base}}/api/bridge/status
+
+### Cross-chain yield scan — queries real Aave APY on Ethereum + Polygon + Arbitrum
+### Compares remote chains vs local APY and recommends bridge if >= 1.5% advantage
+POST {{base}}/api/bridge/scan-yield
+
+### Bridge quote — estimate LayerZero fee before executing
+### targetChain: "ethereum" | "polygon" | "arbitrum"
+### amount: USDt in 6 decimals (100000000 = 100 USDt)
+POST {{base}}/api/bridge/quote
+Content-Type: application/json
+
+{
+  "targetChain": "ethereum",
+  "amount": "100000000"
+}
+
+### Execute bridge — sends USDt to target chain via LayerZero
+POST {{base}}/api/bridge/execute
+Content-Type: application/json
+
+{
+  "targetChain": "ethereum",
+  "amount": "100000000"
+}
 POST {{base}}/api/yield/invest
 Content-Type: application/json
 

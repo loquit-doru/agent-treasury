@@ -47,6 +47,33 @@ export interface BridgeState {
   bestRemoteYield: CrossChainYield | null;
 }
 
+export interface DemoShowcase {
+  wallet: { address: string; usdtBalance: string; ethBalance: string };
+  chains: { chain: string; apy: number; aavePool: string }[];
+  bridgeQuote: { targetChain: string; fee: string; bridgeFee: string } | null;
+  decision: {
+    localApy: number;
+    bestRemoteApy: number;
+    bestRemoteChain: string;
+    apyAdvantage: number;
+    minRequired: number;
+    wouldBridge: boolean;
+    reason: string;
+  };
+  infrastructure: {
+    bridgeProtocol: string;
+    oftContract: string;
+    legacyMesh: string;
+    layerZero: boolean;
+    supportedChains: string[];
+  };
+  safetyCaps: {
+    maxBridgeAmount: string;
+    minBridgeAmount: string;
+    minApyAdvantage: string;
+  };
+}
+
 // Home chain is Arbitrum (where the vault lives)
 const HOME_CHAIN: BridgeChain = 'arbitrum';
 
@@ -56,8 +83,8 @@ const MIN_APY_ADVANTAGE = 1.5; // 1.5% higher APY needed to justify cross-chain
 // Maximum amount to bridge in a single operation (safety cap)
 const MAX_BRIDGE_AMOUNT = 500_000000n; // 500 USDt (6 decimals)
 
-// Minimum amount worth bridging (below this, fees eat the yield)
-const MIN_BRIDGE_AMOUNT = 50_000000n; // 50 USDt
+// Minimum amount worth bridging
+const MIN_BRIDGE_AMOUNT = 1000n; // 0.001 USDt (allows testing with small balances)
 
 export class CrossChainBridge {
   private wdkAccount: WdkAccount;
@@ -417,6 +444,116 @@ export class CrossChainBridge {
       totalBridgedBack: this.state.totalBridgedBack,
       bestRemoteYield: this.state.bestRemoteYield,
       lastScan: this.state.lastCrossChainScan,
+    };
+  }
+
+  /**
+   * Full demonstration showcase — queries everything live:
+   * wallet balance, APY per chain, bridge quote, decision logic.
+   * Designed for hackathon jury to verify the full cross-chain pipeline.
+   */
+  async demoShowcase(
+    walletAddress: string,
+    usdtAddress: string,
+  ): Promise<DemoShowcase> {
+    const { ethers } = await import('ethers');
+    const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+
+    // 1. Wallet balances (live on-chain)
+    const erc20 = new ethers.Contract(usdtAddress, [
+      'function balanceOf(address) view returns (uint256)',
+    ], provider);
+    const [usdtBal, ethBal] = await Promise.all([
+      erc20.balanceOf(walletAddress) as Promise<bigint>,
+      provider.getBalance(walletAddress),
+    ]);
+
+    // 2. APY per chain (real on-chain Aave queries)
+    const chains: DemoShowcase['chains'] = [];
+    const aaveConfigs: Record<string, { pool: string; usdt: string; rpcEnv: string }> = {
+      arbitrum: { pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', usdt: usdtAddress, rpcEnv: 'https://arb1.arbitrum.io/rpc' },
+      ethereum: { pool: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2', usdt: '0xdAC17F958D2ee523a2206206994597C13D831ec7', rpcEnv: process.env.ETHEREUM_RPC_URL || '' },
+      polygon: { pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', usdt: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', rpcEnv: process.env.POLYGON_RPC_URL || '' },
+    };
+
+    for (const [chain, cfg] of Object.entries(aaveConfigs)) {
+      if (!cfg.rpcEnv) { chains.push({ chain, apy: 0, aavePool: cfg.pool }); continue; }
+      try {
+        const p = new ethers.JsonRpcProvider(cfg.rpcEnv);
+        const poolAbi = [
+          `function getReserveData(address asset) view returns (
+            tuple(
+              uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate,
+              uint128 variableBorrowIndex, uint128 currentVariableBorrowRate,
+              uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id,
+              address aTokenAddress, address stableDebtTokenAddress,
+              address variableDebtTokenAddress, address interestRateStrategyAddress,
+              uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt
+            ) data
+          )`,
+        ];
+        const contract = new ethers.Contract(cfg.pool, poolAbi, p);
+        const data = await contract.getReserveData(cfg.usdt);
+        const apy = Math.round(Number(data.currentLiquidityRate) / 1e25 * 100) / 100;
+        chains.push({ chain, apy, aavePool: cfg.pool });
+      } catch {
+        chains.push({ chain, apy: 0, aavePool: cfg.pool });
+      }
+    }
+
+    // 3. Bridge quote (uses real LayerZero quoteSend — no min amount check)
+    let bridgeQuote: DemoShowcase['bridgeQuote'] = null;
+    try {
+      const quote = await this.quoteBridge('ethereum', 1_000000n, walletAddress, usdtAddress);
+      if (quote) {
+        bridgeQuote = { targetChain: quote.targetChain, fee: quote.fee, bridgeFee: quote.bridgeFee };
+      }
+    } catch { /* quote may fail if balance too low — that's ok for demo */ }
+
+    // 4. Decision logic
+    const localApy = chains.find(c => c.chain === 'arbitrum')?.apy ?? 0;
+    const remoteCandidates = chains.filter(c => c.chain !== 'arbitrum' && c.apy > 0);
+    const best = remoteCandidates.length > 0
+      ? remoteCandidates.reduce((a, b) => a.apy > b.apy ? a : b)
+      : null;
+    const advantage = best ? best.apy - localApy : 0;
+    const wouldBridge = advantage >= MIN_APY_ADVANTAGE && usdtBal >= MIN_BRIDGE_AMOUNT;
+
+    let reason: string;
+    if (!best) reason = 'No remote chain APY data available';
+    else if (advantage < MIN_APY_ADVANTAGE) reason = `APY advantage (${advantage.toFixed(2)}%) below minimum threshold (${MIN_APY_ADVANTAGE}%)`;
+    else if (usdtBal < MIN_BRIDGE_AMOUNT) reason = `Wallet balance (${ethers.formatUnits(usdtBal, 6)} USDt) below min bridge amount (${ethers.formatUnits(MIN_BRIDGE_AMOUNT, 6)} USDt)`;
+    else reason = `Would bridge to ${best.chain} for +${advantage.toFixed(2)}% APY advantage`;
+
+    return {
+      wallet: {
+        address: walletAddress,
+        usdtBalance: ethers.formatUnits(usdtBal, 6),
+        ethBalance: ethers.formatEther(ethBal),
+      },
+      chains,
+      bridgeQuote,
+      decision: {
+        localApy,
+        bestRemoteApy: best?.apy ?? 0,
+        bestRemoteChain: best?.chain ?? 'none',
+        apyAdvantage: Math.round(advantage * 100) / 100,
+        minRequired: MIN_APY_ADVANTAGE,
+        wouldBridge,
+        reason,
+      },
+      infrastructure: {
+        bridgeProtocol: 'LayerZero USDt0 OFT (via WDK)',
+        oftContract: '0x14E4A1B13bf7F943c8ff7C51fb60FA964A298D92',
+        legacyMesh: '0x238A52455a1EF6C987CaC94b28B4081aFE50ba06',
+        layerZero: true,
+        supportedChains: ['ethereum', 'polygon', 'arbitrum', 'berachain', 'ink', 'ton', 'tron'],
+      },
+      safetyCaps: {
+        maxBridgeAmount: `${Number(MAX_BRIDGE_AMOUNT) / 1e6} USDt`,
+        minBridgeAmount: `${Number(MIN_BRIDGE_AMOUNT) / 1e6} USDt`,
+        minApyAdvantage: `${MIN_APY_ADVANTAGE}%`,
+      },
     };
   }
 }

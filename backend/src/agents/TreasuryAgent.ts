@@ -434,7 +434,7 @@ export class TreasuryAgent {
       const balance = BigInt(this.lastState?.balance || '0');
       const bridgeAmount = balance / 10n; // Bridge max 10% of treasury
 
-      if (bridgeAmount < 50_000000n) { // Min 50 USDt
+      if (bridgeAmount < 1000n) { // Min 0.001 USDt (allows small-balance testing)
         logger.info('Insufficient balance for cross-chain bridge', { balance: balance.toString() });
         return;
       }

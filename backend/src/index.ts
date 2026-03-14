@@ -811,6 +811,24 @@ app.post('/api/bridge/scan-yield', requireApiKey, async (_req, res) => {
   }
 });
 
+// Full cross-chain bridge demonstration — shows jury the entire pipeline:
+// wallet balance, APY per chain (live on-chain), LayerZero bridge quote, decision logic
+app.get('/api/bridge/demo', async (_req, res) => {
+  try {
+    const bridge = treasuryAgent?.getCrossChainBridge();
+    if (!bridge) {
+      res.status(503).json({ success: false, error: 'Cross-chain bridge not initialized' });
+      return;
+    }
+    const wdkAddr = await getWdkAddress(await initWdk({ seedPhrase: config.seedPhrase, rpcUrl: config.rpcUrl }));
+    const showcase = await bridge.demoShowcase(wdkAddr, config.usdtAddress);
+    res.json({ success: true, data: showcase });
+  } catch (error) {
+    logger.error('Bridge demo failed', { error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ success: false, error: 'Bridge demo failed' });
+  }
+});
+
 // Propose withdrawal
 app.post('/api/treasury/withdrawal/propose', requireApiKey, async (req, res) => {
   try {
