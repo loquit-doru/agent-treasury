@@ -160,6 +160,7 @@ export interface DashboardData {
   dialogueRounds: DialogueRound[];
   revenueTracking?: Record<string, unknown> | null;
   debtRestructuring?: Record<string, unknown> | null;
+  crossChainBridge?: Record<string, unknown> | null;
 }
 
 // Configuration Types
@@ -179,6 +180,10 @@ export interface AgentConfig {
   creditLineAddress: string;
   usdtAddress: string;
   aavePoolAddress?: string;
+  /** Ethereum mainnet RPC for cross-chain bridge + yield comparison */
+  ethereumRpcUrl?: string;
+  /** Polygon RPC for cross-chain bridge + yield comparison */
+  polygonRpcUrl?: string;
 }
 
 // Risk Assessment

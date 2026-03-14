@@ -9,12 +9,20 @@ import WDK from '@tetherto/wdk';
 import type { IWalletAccountWithProtocols } from '@tetherto/wdk';
 import WalletManagerEvm from '@tetherto/wdk-wallet-evm';
 import LendingAaveEvm from '@tetherto/wdk-protocol-lending-aave-evm';
+// @ts-expect-error — bridge module ships types under /types/ but moduleResolution:node can't find them
+import Usdt0BridgeEvm from '@tetherto/wdk-protocol-bridge-usdt0-evm';
 import logger from '../utils/logger';
 
 export interface WdkConfig {
   seedPhrase: string;
   rpcUrl: string;
   aavePoolAddress?: string;
+  /** Optional: Ethereum mainnet RPC for cross-chain bridge */
+  ethereumRpcUrl?: string;
+  /** Optional: Polygon RPC for cross-chain bridge */
+  polygonRpcUrl?: string;
+  /** Max fee for bridge operations (LayerZero fee cap, in wei). Default: 0.01 ETH */
+  bridgeMaxFee?: bigint;
 }
 
 export type WdkAccount = IWalletAccountWithProtocols;
@@ -43,6 +51,12 @@ export async function initWdk(cfg: WdkConfig): Promise<WDK> {
   // so no config is needed (constructor takes only account).
   wdk.registerProtocol('ethereum', 'aave', LendingAaveEvm, undefined as never);
 
+  // Register USDt0 bridge protocol (LayerZero-based cross-chain bridging).
+  // Allows bridging USDt between Arbitrum, Ethereum, and Polygon.
+  const bridgeMaxFee = cfg.bridgeMaxFee ?? 10_000_000_000_000_000n; // 0.01 ETH default
+  wdk.registerProtocol('ethereum', 'usdt0', Usdt0BridgeEvm, { bridgeMaxFee });
+  logger.info('USDt0 bridge protocol registered (LayerZero)', { bridgeMaxFee: bridgeMaxFee.toString() });
+
   wdkInstance = wdk;
 
   // Log wallet address
@@ -69,6 +83,19 @@ export function getAaveLending(account: WdkAccount) {
     return account.getLendingProtocol('aave');
   } catch {
     logger.warn('Aave lending protocol not available');
+    return null;
+  }
+}
+
+/**
+ * Get the USDt0 bridge protocol handle from an account.
+ * Returns null if bridge was not registered.
+ */
+export function getBridgeProtocol(account: WdkAccount) {
+  try {
+    return account.getBridgeProtocol('usdt0');
+  } catch {
+    logger.warn('USDt0 bridge protocol not available');
     return null;
   }
 }

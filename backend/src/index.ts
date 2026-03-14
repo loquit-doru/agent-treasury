@@ -25,6 +25,7 @@ import { generateProof, verifyProof, getBestProvableTier, type ZKCreditProof } f
 import { RevenueTracker } from './services/RevenueTracker';
 import { DebtRestructuring } from './services/DebtRestructuring';
 import { initWdk, getAccount, getWdkAddress, disposeWdk } from './services/wdk';
+// CrossChainBridge is accessed via treasuryAgent.getCrossChainBridge()
 import { closeDB } from './services/StateDB';
 import logger from './utils/logger';
 import { AgentConfig, DashboardData, AgentStatus } from './types';
@@ -49,6 +50,8 @@ const config: AgentConfig = {
   creditLineAddress: process.env.CREDIT_LINE_ADDRESS || '',
   usdtAddress: process.env.USDT_ADDRESS || '',
   aavePoolAddress: process.env.AAVE_POOL_ADDRESS,
+  ethereumRpcUrl: process.env.ETHEREUM_RPC_URL,
+  polygonRpcUrl: process.env.POLYGON_RPC_URL,
 };
 
 // Validate configuration
@@ -152,6 +155,8 @@ async function initializeAgents(): Promise<void> {
       seedPhrase: config.seedPhrase,
       rpcUrl: config.rpcUrl,
       aavePoolAddress: config.aavePoolAddress,
+      ethereumRpcUrl: config.ethereumRpcUrl,
+      polygonRpcUrl: config.polygonRpcUrl,
     });
 
     const wdkAccount = await getAccount(wdk);
@@ -300,6 +305,7 @@ async function getDashboardData(): Promise<DashboardData> {
     dialogueRounds: agentDialogue?.getRecentDialogues(3) || [],
     revenueTracking: revenueTracker?.getSummary() || null,
     debtRestructuring: debtRestructuring?.getSummary() || null,
+    crossChainBridge: treasuryAgent?.getCrossChainBridge()?.getSummary() || null,
   };
 }
 
@@ -315,6 +321,7 @@ app.get('/health', (_req, res) => {
       credit: creditAgent?.getStatus() || 'not_initialized',
       risk: riskAgent?.getStatus() || 'not_initialized',
     },
+    crossChainBridge: treasuryAgent?.getCrossChainBridge()?.getSummary() || null,
     timestamp: Date.now(),
   });
 });
@@ -687,6 +694,122 @@ app.post('/api/yield/invest', requireApiKey, async (req, res) => {
 });
 
 // ==================== Withdrawal Routes ====================
+
+// ==================== Cross-Chain Bridge Routes ====================
+
+// Get bridge status and summary
+app.get('/api/bridge/status', async (_req, res) => {
+  try {
+    const bridge = treasuryAgent?.getCrossChainBridge();
+    if (!bridge) {
+      res.status(503).json({ success: false, error: 'Cross-chain bridge not initialized' });
+      return;
+    }
+    res.json({ success: true, data: bridge.getSummary() });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Failed to fetch bridge status' });
+  }
+});
+
+// Quote a bridge operation
+app.post('/api/bridge/quote', requireApiKey, async (req, res) => {
+  try {
+    const bridge = treasuryAgent?.getCrossChainBridge();
+    if (!bridge) {
+      res.status(503).json({ success: false, error: 'Cross-chain bridge not initialized' });
+      return;
+    }
+    const { targetChain, amount } = req.body as { targetChain: string; amount: string };
+    if (!targetChain || !amount) {
+      res.status(400).json({ success: false, error: 'Missing targetChain or amount' });
+      return;
+    }
+    const validChains = ['ethereum', 'arbitrum', 'polygon'];
+    if (!validChains.includes(targetChain)) {
+      res.status(400).json({ success: false, error: `Invalid chain. Must be one of: ${validChains.join(', ')}` });
+      return;
+    }
+    const wdkAddr = await getWdkAddress(await initWdk({ seedPhrase: config.seedPhrase, rpcUrl: config.rpcUrl }));
+    const quote = await bridge.quoteBridge(
+      targetChain as 'ethereum' | 'arbitrum' | 'polygon',
+      BigInt(amount),
+      wdkAddr,
+      config.usdtAddress,
+    );
+    if (!quote) {
+      res.status(400).json({ success: false, error: 'Bridge quote failed — protocol may not be available' });
+      return;
+    }
+    res.json({ success: true, data: quote });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Bridge quote failed' });
+  }
+});
+
+// Execute a bridge operation
+app.post('/api/bridge/execute', requireApiKey, async (req, res) => {
+  try {
+    const bridge = treasuryAgent?.getCrossChainBridge();
+    if (!bridge) {
+      res.status(503).json({ success: false, error: 'Cross-chain bridge not initialized' });
+      return;
+    }
+    const { targetChain, amount } = req.body as { targetChain: string; amount: string };
+    if (!targetChain || !amount) {
+      res.status(400).json({ success: false, error: 'Missing targetChain or amount' });
+      return;
+    }
+    const validChains = ['ethereum', 'arbitrum', 'polygon'];
+    if (!validChains.includes(targetChain)) {
+      res.status(400).json({ success: false, error: `Invalid chain. Must be one of: ${validChains.join(', ')}` });
+      return;
+    }
+    const wdkAddr = await getWdkAddress(await initWdk({ seedPhrase: config.seedPhrase, rpcUrl: config.rpcUrl }));
+    const result = await bridge.bridge(
+      targetChain as 'ethereum' | 'arbitrum' | 'polygon',
+      BigInt(amount),
+      wdkAddr,
+      config.usdtAddress,
+    );
+    if (!result) {
+      res.status(400).json({ success: false, error: 'Bridge execution failed or amount below minimum' });
+      return;
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Bridge execution failed' });
+  }
+});
+
+// Trigger cross-chain yield scan (manual)
+app.post('/api/bridge/scan-yield', requireApiKey, async (_req, res) => {
+  try {
+    const bridge = treasuryAgent?.getCrossChainBridge();
+    if (!bridge) {
+      res.status(503).json({ success: false, error: 'Cross-chain bridge not initialized' });
+      return;
+    }
+    // Get current local APY
+    const state = treasuryAgent?.getState();
+    const localApy = state?.yieldPositions?.find(p => p.protocol.toLowerCase().includes('aave'))?.apy ?? 0;
+    const wdkAddr = await getWdkAddress(await initWdk({ seedPhrase: config.seedPhrase, rpcUrl: config.rpcUrl }));
+
+    const bestRemote = await bridge.evaluateCrossChainYield(localApy, wdkAddr, config.usdtAddress);
+    res.json({
+      success: true,
+      data: {
+        localApy,
+        bestRemote,
+        summary: bridge.getSummary(),
+        message: bestRemote
+          ? `Cross-chain opportunity: ${bestRemote.chain} at ${bestRemote.apy}% APY (local: ${localApy}%)`
+          : 'No cross-chain yield advantage found',
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: 'Cross-chain yield scan failed' });
+  }
+});
 
 // Propose withdrawal
 app.post('/api/treasury/withdrawal/propose', requireApiKey, async (req, res) => {

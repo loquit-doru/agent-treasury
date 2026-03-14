@@ -9,6 +9,7 @@ import { LLMClient } from '../services/LLMClient';
 import EventBus from '../orchestrator/EventBus';
 import { getAaveLending } from '../services/wdk';
 import type { WdkAccount } from '../services/wdk';
+import { CrossChainBridge } from '../services/CrossChainBridge';
 import type { WalletAccountEvm } from '@tetherto/wdk-wallet-evm';
 import logger from '../utils/logger';
 import {
@@ -84,6 +85,7 @@ export class TreasuryAgent {
   private yieldPositions: import('../types').YieldPosition[] = [];
   private historySnapshots: Array<{ timestamp: number; balance: number; volume: number; yieldTotal: number }> = [];
   private monitorCycleCount = 0;
+  private crossChainBridge: CrossChainBridge;
 
   constructor(
     config: AgentConfig,
@@ -96,6 +98,7 @@ export class TreasuryAgent {
     this.provider = provider;
     this.wdkAccount = wdkAccount;
     this.llm = llmClient;
+    this.crossChainBridge = new CrossChainBridge(wdkAccount);
     // WDK handles wallet/signing; ethers reads contract state
     this.vaultContract = new ethers.Contract(
       config.treasuryVaultAddress,
@@ -329,6 +332,12 @@ export class TreasuryAgent {
 
       await new Promise(r => setTimeout(r, 3000));
 
+      // Cross-chain yield scan (every 5th cycle ~ 7.5 min to avoid RPC spam)
+      if (this.monitorCycleCount % 5 === 0) {
+        await this.scanCrossChainYield();
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
       // Check pending transactions
       await this.checkPendingTransactions();
 
@@ -396,6 +405,78 @@ export class TreasuryAgent {
       amount: totalHarvested.toString(),
       reasoning: `Harvested ${harvestedFormatted} USDt yield revenue on-chain. Routing to service inter-agent debt first, remainder reinvested.`,
     });
+  }
+
+  /**
+   * Scan remote chains for better yield and bridge if advantageous.
+   * Uses CrossChainBridge service to compare Aave APY across Arbitrum/Ethereum/Polygon.
+   */
+  private async scanCrossChainYield(): Promise<void> {
+    try {
+      // Get local APY from current yield positions
+      const localAavePos = this.yieldPositions.find(p => p.protocol.toLowerCase().includes('aave'));
+      const localApy = localAavePos?.apy ?? 0;
+
+      const walletAddress = await this.wdkAccount.getAddress();
+
+      const bestRemote = await this.crossChainBridge.evaluateCrossChainYield(
+        localApy,
+        walletAddress,
+        this.config.usdtAddress,
+      );
+
+      if (!bestRemote) {
+        logger.debug('No cross-chain yield advantage found');
+        return;
+      }
+
+      // Bridge decision: only if we have enough balance and it's worth it
+      const balance = BigInt(this.lastState?.balance || '0');
+      const bridgeAmount = balance / 10n; // Bridge max 10% of treasury
+
+      if (bridgeAmount < 50_000000n) { // Min 50 USDt
+        logger.info('Insufficient balance for cross-chain bridge', { balance: balance.toString() });
+        return;
+      }
+
+      // Log the opportunity (actual bridge requires ETHEREUM_RPC_URL / POLYGON_RPC_URL configured)
+      EventBus.emitEvent('treasury:cross_chain_decision', 'treasury', {
+        action: 'cross_chain_yield_bridge',
+        reasoning: `Cross-chain opportunity: ${bestRemote.chain} Aave at ${bestRemote.apy}% APY vs local ${localApy}%. Would bridge ${Number(bridgeAmount) / 1e6} USDt for +${(bestRemote.apy - localApy).toFixed(2)}% advantage.`,
+        data: {
+          localApy,
+          remoteApy: bestRemote.apy,
+          targetChain: bestRemote.chain,
+          bridgeAmount: bridgeAmount.toString(),
+          bridgeCostUsd: bestRemote.bridgeCostUsd,
+        },
+        status: 'executed',
+      });
+
+      // Execute bridge if RPCs are configured
+      if (this.config.ethereumRpcUrl || this.config.polygonRpcUrl) {
+        const result = await this.crossChainBridge.bridge(
+          bestRemote.chain,
+          bridgeAmount,
+          walletAddress,
+          this.config.usdtAddress,
+        );
+        if (result) {
+          this.remember('cross_chain_bridge', `Bridged ${Number(bridgeAmount) / 1e6} USDt to ${bestRemote.chain} for ${bestRemote.apy}% APY (tx: ${result.hash})`);
+        }
+      }
+    } catch (err) {
+      logger.error('Cross-chain yield scan failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Get the cross-chain bridge instance (for API/dashboard access).
+   */
+  getCrossChainBridge(): CrossChainBridge {
+    return this.crossChainBridge;
   }
 
   /**
