@@ -195,30 +195,44 @@ agent-treasury/
 ### System Flow
 
 ```
-                    ┌─────────────────────┐
-                    │    Smart Contracts   │
-                    │  TreasuryVault.sol   │
-                    │   CreditLine.sol     │
-                    └────────▲────────────┘
-                             │ ethers.js + WDK
-                    ┌────────┴────────────┐
-                    │      Backend         │
-              ┌─────┤  Express + WS :3001  ├─────┐
-              │     └─────────────────────┘      │
-              │              │                    │
-     ┌────────▼───┐  ┌──────▼──────┐   ┌────────▼────────┐
-     │  Treasury   │  │   Credit    │   │  Agent Dialogue  │
-     │   Agent     │  │   Agent     │   │ (Board Meetings) │
-     │ yield/risk  │  │ score/lend  │   │  LLM debate/45s  │
-     └──────┬──────┘  └──────┬──────┘   └────────┬────────┘
-            │                │                    │
-            └────────┬───────┘                    │
-                     │  EventBus                  │
-              ┌──────▼──────┐
-              │   Frontend   │
-              │  Dashboard   │
-              │  WebSocket   │
-              └─────────────┘
+                    ┌──────────────────────────┐
+                    │      Smart Contracts      │
+                    │    TreasuryVault.sol       │
+                    │     CreditLine.sol         │
+                    │    (Arbitrum One L2)       │
+                    └───────────▲───────────────┘
+                                │ ethers.js + WDK
+                    ┌───────────┴───────────────┐
+                    │         Backend            │
+                    │    Express + WS :3001      │
+                    │    + MCP Server (stdio)    │
+                    └──┬─────────┬──────────┬───┘
+                       │         │          │
+          ┌────────────▼──┐ ┌───▼────────┐ ┌▼──────────────┐
+          │   Treasury    │ │   Credit   │ │     Risk      │
+          │    Agent      │ │   Agent    │ │    Agent      │
+          │ yield/invest  │ │ score/lend │ │  ML predict   │
+          └───────┬───────┘ └─────┬──────┘ └───────┬───────┘
+                  │               │                 │
+                  └───────┬───────┴─────────────────┘
+                          │
+                   ┌──────▼───────────────────────┐
+                   │          EventBus             │
+                   │  + AgentDialogue (LLM 45s)    │
+                   └──────┬───────────────────────┘
+                          │
+             ┌────────────▼─────────────────┐
+             │       Services Layer          │
+             │  CrossChainBridge │ ZKProof   │
+             │  InterAgentLend  │ Revenue    │
+             │  DebtRestructure │ StateDB    │
+             └────────────┬─────────────────┘
+                          │
+                   ┌──────▼───────┐
+                   │   Frontend    │
+                   │  React+Vite   │
+                   │   WebSocket   │
+                   └──────────────┘
 ```
 
 ## Quick Start
