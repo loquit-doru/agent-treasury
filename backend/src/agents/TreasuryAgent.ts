@@ -126,7 +126,10 @@ export class TreasuryAgent {
     // Restore persisted state if available, otherwise seed defaults
     const persisted = loadTreasuryState();
     if (persisted) {
-      this.yieldPositions = persisted.yieldPositions;
+      // Filter out legacy fiction (e.g. Compound V3 — no WDK module exists)
+      this.yieldPositions = persisted.yieldPositions.filter(
+        p => !p.protocol.toLowerCase().includes('compound')
+      );
       this.historySnapshots = persisted.historySnapshots;
       this.decisionMemory = persisted.decisionMemory;
       logger.info('Restored TreasuryAgent state from disk', {
@@ -135,13 +138,10 @@ export class TreasuryAgent {
         decisions: this.decisionMemory.length,
         savedAt: new Date(persisted.savedAt).toISOString(),
       });
-    } else if (this.yieldPositions.length === 0) {
-      const now = Date.now();
-      this.yieldPositions.push(
-        { protocol: 'Aave V3',     amount: String(ethers.parseUnits('8', 6)), apy: 4.2, investedAt: now - 3 * 86400_000, harvested: '0' },
-        { protocol: 'Compound V3', amount: String(ethers.parseUnits('5', 6)), apy: 3.8, investedAt: now - 2 * 86400_000, harvested: '0' },
-      );
-      logger.info('Seeded yield positions for deterministic demo reproducibility');
+    } else {
+      // No persisted state and no fixtures — start clean.
+      // Yield positions accumulate only from real WDK Aave supply() calls.
+      logger.info('No persisted yield positions — starting empty (on-chain only)');
     }
 
     // Initial state sync
@@ -228,12 +228,47 @@ export class TreasuryAgent {
         }
       }
 
-      // Compute accrued yield on each position
+      // Compute accrued yield — try real on-chain aToken balance first, fall back to APY estimate
       const now = Date.now();
-      for (const pos of this.yieldPositions) {
-        const elapsed = (now - pos.investedAt) / (365.25 * 24 * 3600 * 1000); // years
-        const yieldAccrued = Math.floor(Number(pos.amount) * (pos.apy / 100) * elapsed);
-        pos.harvested = String(yieldAccrued);
+      let realYieldQueried = false;
+      try {
+        const aave = getAaveLending(this.wdkAccount);
+        if (aave && this.yieldPositions.length > 0) {
+          const accountData = await aave.getAccountData();
+          if (accountData) {
+            const totalCollateral = BigInt(accountData.totalCollateralBase.toString());
+            // totalCollateralBase is in USD (8 decimals on Aave V3)
+            // Compute total principal invested
+            const totalPrincipal = this.yieldPositions.reduce(
+              (sum, p) => sum + BigInt(p.amount), 0n
+            );
+            // aToken balance growth = real yield accrued on-chain
+            if (totalCollateral > 0n && totalPrincipal > 0n) {
+              // Distribute proportionally across positions
+              for (const pos of this.yieldPositions) {
+                const posPrincipal = BigInt(pos.amount);
+                const posShare = (totalCollateral * posPrincipal) / totalPrincipal;
+                const yieldAccrued = posShare > posPrincipal ? posShare - posPrincipal : 0n;
+                pos.harvested = yieldAccrued.toString();
+              }
+              realYieldQueried = true;
+              logger.debug('Yield updated from on-chain Aave accountData', {
+                totalCollateral: totalCollateral.toString(),
+              });
+            }
+          }
+        }
+      } catch {
+        // Fallback below
+      }
+
+      // Fallback: APY-based estimate (only if on-chain query failed)
+      if (!realYieldQueried) {
+        for (const pos of this.yieldPositions) {
+          const elapsed = (now - pos.investedAt) / (365.25 * 24 * 3600 * 1000);
+          const yieldAccrued = Math.floor(Number(pos.amount) * (pos.apy / 100) * elapsed);
+          pos.harvested = String(yieldAccrued);
+        }
       }
 
       const state: TreasuryState = {
@@ -719,31 +754,15 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
         amount = CONSTRAINTS.MAX_SINGLE_TX;
       }
 
-      // Track yield position immediately (AI decision = primary value)
+      // ON-CHAIN FIRST: attempt real DeFi supply, only track position if it succeeds.
       const displayName = protocol.charAt(0).toUpperCase() + protocol.slice(1) + ' V3';
-      const existing = this.yieldPositions.find(p => p.protocol === displayName);
-      if (existing) {
-        existing.amount = String(BigInt(existing.amount) + amount);
-      } else {
-        this.yieldPositions.push({
-          protocol: displayName,
-          amount: amount.toString(),
-          apy,
-          investedAt: Date.now(),
-          harvested: '0',
-        });
-      }
-
-      // Attempt on-chain TX — try WDK Aave supply first, then vault investInYield
       let hash: string | undefined;
 
       // Primary: WDK Aave lending supply (real DeFi interaction)
-      // Requires: approve USDt to Aave pool first, then supply.
       try {
         const aave = getAaveLending(this.wdkAccount);
         if (aave) {
-          // Step 1: Approve USDt spending by Aave pool (required per WDK docs)
-          // approve() is on WalletAccountEvm, not the base interface
+          // Step 1: Approve USDt spending by Aave pool
           if (this.config.aavePoolAddress) {
             const evmAccount = this.wdkAccount as unknown as WalletAccountEvm;
             const approveResult = await evmAccount.approve({
@@ -779,28 +798,47 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
           ]);
           hash = await this.sendTx(this.config.treasuryVaultAddress, data, `investInYield(${protocol})`);
         } catch (txErr) {
-          logger.warn('On-chain investInYield reverted (position tracked off-chain)', {
+          logger.warn('On-chain yield investment failed — position NOT tracked (no phantom positions)', {
             protocol, error: txErr instanceof Error ? txErr.message : String(txErr),
           });
         }
       }
 
+      // Only track position AFTER on-chain success — no phantom yield positions
+      if (hash) {
+        const existing = this.yieldPositions.find(p => p.protocol === displayName);
+        if (existing) {
+          existing.amount = String(BigInt(existing.amount) + amount);
+        } else {
+          this.yieldPositions.push({
+            protocol: displayName,
+            amount: amount.toString(),
+            apy,
+            investedAt: Date.now(),
+            harvested: '0',
+          });
+        }
+      }
+
+      const onChain = !!hash;
       const decision: AgentDecision = {
         id: `yield-${Date.now()}`,
         agentType: 'treasury',
         timestamp: Date.now(),
         action: 'invest_yield',
-        reasoning: `Invested ${ethers.formatUnits(amount, 6)} USDt in ${protocol} at ${apy}% APY — position tracked.`,
-        data: { protocol, amount: amount.toString(), apy },
+        reasoning: onChain
+          ? `Invested ${ethers.formatUnits(amount, 6)} USDt in ${protocol} at ${apy}% APY — confirmed on-chain.`
+          : `Yield investment in ${protocol} failed on-chain — position NOT tracked.`,
+        data: { protocol, amount: amount.toString(), apy, onChain },
         txHash: hash,
-        status: 'executed',
+        status: onChain ? 'executed' : 'failed',
       };
 
       EventBus.emitEvent('treasury:yield_invested', 'treasury', decision);
       
-      logger.info('Yield investment recorded', { protocol, amount: amount.toString(), apy, hash: hash || 'off-chain' });
+      logger.info('Yield investment result', { protocol, amount: amount.toString(), apy, hash: hash || 'FAILED', onChain });
       
-      return hash || 'off-chain';
+      return hash || null;
     } catch (error) {
       logger.error('Yield investment failed', { error, protocol, amount: amount.toString() });
       return null;

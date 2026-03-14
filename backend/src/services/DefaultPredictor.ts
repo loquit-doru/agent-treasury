@@ -13,8 +13,7 @@
  */
 
 import { readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { resolve } from 'path';
 import type { CreditHistory, CreditProfile } from '../types';
 import logger from '../utils/logger';
 
@@ -52,7 +51,7 @@ interface TrainedModelFile {
 
 function loadTrainedModel(): { weights: Record<string, number>; bias: number; version: string } {
   try {
-    const modelPath = resolve(dirname(fileURLToPath(import.meta.url)), 'trained-model.json');
+    const modelPath = resolve(__dirname, 'trained-model.json');
     const raw = readFileSync(modelPath, 'utf-8');
     const model: TrainedModelFile = JSON.parse(raw);
     logger.info('Loaded trained ML model', {

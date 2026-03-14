@@ -85,7 +85,7 @@ export interface Loan {
   totalDue: string;
   active: boolean;
   /** Revenue-backed loans use projected agent income as collateral instead of crypto */
-  loanType?: 'standard' | 'revenue_backed';
+  loanType?: 'standard' | 'revenue_backed' | 'restructured';
   /** For revenue-backed: the projected 30d revenue at time of issuance */
   revenueProjection?: string;
   /** For restructured loans: reference to restructuring proposal */

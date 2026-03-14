@@ -1206,7 +1206,7 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       const { loanId, newDueDate, newRate, forgiveness } = event.payload as {
         loanId: number; newDueDate: number; newRate: number; forgiveness: string;
       };
-      this.applyRestructuring(loanId, newDueDate, newRate, forgiveness);
+      await this.applyRestructuring(loanId, newDueDate, newRate, forgiveness);
     });
 
     // Listen for dialogue consensus actions (autonomous lending triggers)
@@ -1415,7 +1415,7 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       // Auto-accept pending proposals (autonomous behavior)
       const accepted = this.debtRestructuring.autoAcceptProposals();
       for (const p of accepted) {
-        this.applyRestructuring(
+        await this.applyRestructuring(
           p.originalLoanId,
           p.proposedTerms.newDueDate,
           p.proposedTerms.newRateBps,
@@ -1537,33 +1537,108 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
   }
 
   /**
-   * Apply restructured terms to a local loan (called after proposal acceptance).
-   * Updates dueDate, interestRate, and applies forgiveness to the repaid amount.
+   * Apply restructured terms to a loan.
+   *
+   * CreditLine V1 contract does not have a native `restructureLoan()` function.
+   * Workaround: close old loan via markDefaulted() + issue new loan via borrowForCustom()
+   * with the restructured terms. This is atomic from the agent's perspective.
    */
-  private applyRestructuring(loanId: number, newDueDate: number, newRateBps: number, forgiveness: string): void {
+  private async applyRestructuring(loanId: number, newDueDate: number, newRateBps: number, forgiveness: string): Promise<void> {
     const loan = this.loans.get(loanId);
     if (!loan || !loan.active) return;
 
     const oldDueDate = loan.dueDate;
     const oldRate = loan.interestRate;
-
-    loan.dueDate = newDueDate;
-    loan.interestRate = newRateBps;
-
-    // Apply forgiveness: reduce totalDue, increase repaid (as if partially forgiven)
+    const borrower = loan.borrower;
     const forgivenAmount = BigInt(forgiveness);
-    if (forgivenAmount > 0n) {
-      loan.repaid = (BigInt(loan.repaid) + forgivenAmount).toString();
+    const remainingPrincipal = BigInt(loan.principal) - forgivenAmount;
+
+    if (remainingPrincipal <= 0n) {
+      // Full forgiveness — just close the loan
+      loan.active = false;
+      loan.repaid = loan.principal;
+      loan.totalDue = '0';
+      logger.info(`Loan #${loanId} fully forgiven via restructuring`);
+      this.remember('restructure_loan', `Loan #${loanId} fully forgiven (${ethers.formatUnits(forgiveness, 6)} USDt)`);
+      return;
+    }
+
+    // Step 1: Close old loan on-chain via markDefaulted (only way to close in V1 contract)
+    let oldLoanClosed = false;
+    try {
+      const data = CREDIT_LINE_IFACE.encodeFunctionData('markDefaulted', [loanId]);
+      await this.sendTx(this.config.creditLineAddress, data, `markDefaulted loan #${loanId} for restructuring`);
+      oldLoanClosed = true;
+      logger.info(`Old loan #${loanId} closed on-chain for restructuring`);
+    } catch (err) {
+      logger.warn(`Failed to close old loan #${loanId} on-chain — applying locally only`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Step 2: Issue new loan with restructured terms on-chain
+    let newTxHash: string | undefined;
+    let newOnChainLoanId: number | undefined;
+    const newDurationSec = newDueDate - Math.floor(Date.now() / 1000);
+    if (oldLoanClosed && newDurationSec > 0) {
+      try {
+        const data = CREDIT_LINE_IFACE.encodeFunctionData('borrowForCustom', [
+          borrower, remainingPrincipal, newRateBps, newDurationSec,
+        ]);
+        newTxHash = await this.sendTx(this.config.creditLineAddress, data, `restructure-reissue(${borrower})`);
+        const loanCount = await this.creditContract.loanCount();
+        newOnChainLoanId = Number(loanCount) - 1;
+        logger.info(`Restructured loan reissued on-chain`, { newLoanId: newOnChainLoanId, hash: newTxHash });
+      } catch (err) {
+        logger.warn(`Failed to reissue restructured loan on-chain`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Update local state
+    loan.active = false;
+    loan.repaid = (BigInt(loan.repaid) + forgivenAmount).toString();
+
+    // Track new restructured loan locally
+    if (newOnChainLoanId !== undefined) {
+      const newLoan: Loan = {
+        id: newOnChainLoanId,
+        borrower,
+        principal: remainingPrincipal.toString(),
+        interestRate: newRateBps,
+        borrowedAt: Math.floor(Date.now() / 1000),
+        dueDate: newDueDate,
+        repaid: '0',
+        interest: '0',
+        totalDue: remainingPrincipal.toString(),
+        active: true,
+        loanType: 'restructured',
+      };
+      this.loans.set(newOnChainLoanId, newLoan);
+    } else {
+      // Fallback: just update local loan terms
+      loan.active = true;
+      loan.dueDate = newDueDate;
+      loan.interestRate = newRateBps;
       const newTotalDue = BigInt(loan.totalDue) - forgivenAmount;
       loan.totalDue = (newTotalDue > 0n ? newTotalDue : 0n).toString();
     }
 
-    logger.info(`Restructuring applied to loan #${loanId}`, {
+    const onChain = !!newTxHash;
+    logger.info(`Restructuring applied to loan #${loanId}${onChain ? ' (on-chain)' : ' (local only)'}`, {
       oldDueDate, newDueDate, oldRate, newRateBps,
-      forgiveness: forgiveness, borrower: loan.borrower,
+      forgiveness, borrower, onChain,
     });
 
-    this.remember('restructure_loan', `Loan #${loanId} restructured: rate ${oldRate}→${newRateBps}bps, due date extended, forgiveness ${ethers.formatUnits(forgiveness, 6)} USDt`);
+    EventBus.emitEvent('credit:loan_restructured', 'credit', {
+      action: 'restructure_loan',
+      reasoning: `Loan #${loanId} restructured: rate ${oldRate}→${newRateBps}bps, due date extended, forgiveness ${ethers.formatUnits(forgiveness, 6)} USDt${onChain ? ' — executed on-chain' : ''}`,
+      data: { loanId, newLoanId: newOnChainLoanId, borrower, newRateBps, newDueDate, forgiveness, onChain, txHash: newTxHash },
+      status: onChain ? 'executed' : 'local_only',
+    });
+
+    this.remember('restructure_loan', `Loan #${loanId} restructured${onChain ? ' on-chain' : ''}: rate ${oldRate}→${newRateBps}bps, forgiveness ${ethers.formatUnits(forgiveness, 6)} USDt`);
   }
 
   /**
