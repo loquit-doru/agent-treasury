@@ -62,6 +62,24 @@ All write transactions go through WDK as primary signer (`0xcF34...`). Verified 
 | EXECUTOR_ROLE grant (Credit) | [`0x80902fa2...`](https://arbiscan.io/tx/0x80902fa26e34434b594f54ef8fa1bdf48c957cbbb086fe61743c36eec64a0d2e) |
 | USDt approve → Aave V3 | [`0x46f7966b...`](https://arbiscan.io/tx/0x46f7966bd2055e22273e6d3870232a2e630612d57b8e629ea8225585fd9d4bdc) |
 | USDt supply → Aave V3 | [`0x2cccf89d...`](https://arbiscan.io/tx/0x2cccf89dfe2c17599dd1644e8e92c265d8218c9e3f5d730fe61a871b4c6d7152) |
+| **Cross-chain bridge** (Arbitrum→Ethereum via LayerZero) | [`0x55efb23e...`](https://arbiscan.io/tx/0x55efb23ec8bfc027d75abcb44e12a25624e5306f0140c169c09930760fd69efb) |
+
+**6. Cross-chain bridge demo** — The Treasury Agent autonomously compares Aave yields across chains and bridges USDt0 via LayerZero when profitable:
+```bash
+# Full cross-chain showcase: wallet balance, APY per chain (live), bridge quote, decision logic
+curl https://treasury.proceedgate.dev/api/bridge/demo
+
+# Bridge status (tracked executions)
+curl https://treasury.proceedgate.dev/api/bridge/status
+```
+
+| Chain | Live Aave APY | Contract |
+|-------|--------------|----------|
+| Arbitrum (home) | 1.61% | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` |
+| Ethereum | 1.70% | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` |
+| Polygon | 2.30% | `0x794a61358D6845594F94dc1DB02A252b5b4814aD` |
+
+Bridge infra: LayerZero USDt0 OFT (`0x14E4A1B13bf7F943c8ff7C51fb60FA964A298D92`) + Legacy Mesh (`0x238A52455a1EF6C987CaC94b28B4081aFE50ba06`). Safety caps: 500 USDt max, 1.5% min APY advantage.
 
 ---
 
@@ -103,6 +121,9 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 - ✅ **USDt as base asset** for all operations
 - ✅ **WDK** for wallet and transaction execution
 
+#### 🌊 Autonomous DeFi Agent — Nice to Haves ✅
+- ✅ **Cross-chain yield optimization** — Treasury Agent compares Aave APY across Arbitrum, Ethereum, and Polygon (real on-chain queries), bridges USDt0 via LayerZero when remote yield exceeds local by ≥1.5%. Proven with live tx [`0x55efb23e...`](https://arbiscan.io/tx/0x55efb23ec8bfc027d75abcb44e12a25624e5306f0140c169c09930760fd69efb)
+
 #### 🏦 Lending Bot — Bonuses ✅
 - ✅ **Inter-agent lending** — Credit Agent can borrow capital from Treasury Agent's pool via EventBus (`credit:capital_request` → `treasury:capital_allocated`). Treasury evaluates and caps at 20% of balance per request. See `backend/src/services/InterAgentLending.ts`
 - ✅ **ML default prediction** — Logistic regression model predicts probability of loan default (0–100%) using 7 features: txCount, volume, repaymentRate, accountAge, creditScore, utilizationRate, defaultHistory. Critical risk (>60%) auto-blocks loans before LLM evaluation. See `backend/src/services/DefaultPredictor.ts`
@@ -117,7 +138,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 
 | Technology | Role |
 |-----------|------|
-| **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`) | Server-side wallet (seed in `.env`), Aave lending |
+| **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`, `wdk-protocol-bridge-usdt0-evm`) | Server-side wallet (seed in `.env`), Aave lending, Cross-chain bridge |
 | **OpenClaw** | Agent identity (SOUL.md), skills, MCP tool definitions |
 | **Foundry** | Smart contract tests (31 tests) & deployment |
 | **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning |  
@@ -158,6 +179,7 @@ agent-treasury/
 │       │   ├── RevenueTracker.ts      # Revenue-backed lending (agent earnings tracking)
 │       │   ├── DebtRestructuring.ts   # Autonomous debt restructuring (ML+LLM)
 │       │   ├── StateDB.ts             # SQLite (WAL) persistence layer
+│       │   ├── CrossChainBridge.ts    # USDt0 bridge via LayerZero (WDK)
 │       │   └── StatePersistence.ts    # Dual-write: JSON + SQLite
 │       ├── mcp-server.ts         # MCP server (stdio, 15 tools)
 │       └── index.ts              # API + WebSocket server
