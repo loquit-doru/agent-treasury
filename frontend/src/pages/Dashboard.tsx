@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   TrendingUp,
   AlertTriangle,
@@ -11,6 +12,7 @@ import {
   Activity,
   CheckCircle2,
   Shield,
+  ArrowLeft,
 } from 'lucide-react';
 import { BonusFeatures } from '../components/BonusFeatures';
 import { AgentChat } from '../components/AgentChat';
@@ -240,7 +242,12 @@ export default function Dashboard() {
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
          <div className="flex flex-col gap-1">
-            <h2 className="text-2xl font-bold text-white tracking-tight">Mission Control</h2>
+            <div className="flex items-center gap-3">
+              <Link to="/" className="inline-flex items-center gap-1.5 text-xs text-gray-500 hover:text-green-400 transition-colors">
+                <ArrowLeft className="w-3.5 h-3.5" /> Home
+              </Link>
+              <h2 className="text-2xl font-bold text-white tracking-tight">Mission Control</h2>
+            </div>
             <div className="flex items-center gap-3">
                <p className="text-sm text-gray-400">AgentTreasury real-time overview and health</p>
                <div className="h-4 w-px bg-gray-800" />
