@@ -50,7 +50,7 @@ curl -X POST https://treasury.proceedgate.dev/api/credit/0x3C44CdDdB6a900fa2b585
 npm run contracts:test
 ```
 
-**5. WDK on-chain proof** (see [`ONCHAIN_PROOF.md`](ONCHAIN_PROOF.md) for full details):
+**5. WDK on-chain proof** — all write transactions go through WDK as primary signer (`0xcF34...`). Verified on Arbitrum One mainnet:
 
 All write transactions go through WDK as primary signer (`0xcF34...`). Verified on Arbitrum One mainnet:
 
@@ -85,14 +85,15 @@ Bridge infra: LayerZero USDt0 OFT (`0x14E4A1B13bf7F943c8ff7C51fb60FA964A298D92`)
 
 ## What It Does
 
-AgentTreasury is a **2-agent autonomous financial system** that manages a DAO treasury:
+AgentTreasury is a **3-agent autonomous financial system** that manages a DAO treasury:
 
 | Agent | Responsibilities |
 |-------|-----------------|
 | **Treasury Agent** | Yield optimization (Aave via WDK), withdrawal proposals, emergency pause, daily volume caps |
 | **Credit Agent** | On-chain credit scoring (500–1000), 3-tier lending (5%/10%/15% APR), default detection, repayment tracking |
+| **Risk Agent** | Compliance & systemic risk oversight, participates in Board Meetings as advisory voice |
 
-Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, and debate strategy in periodic **Board Meetings** (inter-agent dialogue).
+All three agents **hold and manage USDt autonomously**, make LLM-powered decisions, and debate strategy in periodic **Board Meetings** (inter-agent dialogue).
 
 ### Hackathon Track Alignment
 
@@ -141,7 +142,7 @@ Both agents **hold and manage USDt autonomously**, make LLM-powered decisions, a
 | **WDK** (`@tetherto/wdk`, `wdk-wallet-evm`, `wdk-protocol-lending-aave-evm`, `wdk-protocol-bridge-usdt0-evm`) | Server-side wallet (seed in `.env`), Aave lending, Cross-chain bridge |
 | **OpenClaw** | Agent identity (SOUL.md), skills, MCP tool definitions |
 | **Foundry** | Smart contract tests (31 tests) & deployment |
-| **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning |  
+| **Groq** (LLaMA 3.3 70B) | Primary LLM for agent reasoning |
 | **Failover LLM** (configurable) | Any OpenAI-compatible provider — auto-switches on 429/5xx |
 | **MCP Server** | 15 tools for external agent access (stdio transport) |
 | **Ethers.js v6** | Read-only contract interactions |
@@ -166,7 +167,8 @@ agent-treasury/
 │   └── src/
 │       ├── agents/
 │       │   ├── TreasuryAgent.ts  # Yield optimization, withdrawal proposals
-│       │   └── CreditAgent.ts    # Credit scoring, lending, repayment
+│       │   ├── CreditAgent.ts    # Credit scoring, lending, repayment
+│       │   └── RiskAgent.ts      # Compliance & systemic risk (advisory)
 │       ├── orchestrator/
 │       │   ├── EventBus.ts       # Pub/sub for inter-agent communication
 │       │   └── AgentDialogue.ts  # Board Meetings (LLM-driven debate)
@@ -302,14 +304,13 @@ cp backend/.env.example backend/.env
 Edit `backend/.env`:
 ```bash
 # LLM (primary — Groq is free at console.groq.com)
-LLM_API_KEY=gsk_...
+OPENAI_API_KEY=gsk_...
 LLM_MODEL=llama-3.3-70b-versatile
 LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_PROVIDER_NAME=groq
 
 # LLM failover (optional)
 # LLM_FALLBACK_API_KEY=sk-...
-# LLM_FALLBACK_MODEL=gpt-4
+# LLM_FALLBACK_MODEL=gpt-4o-mini
 # LLM_FALLBACK_BASE_URL=https://api.openai.com/v1
 
 # WDK
@@ -589,14 +590,14 @@ After a loan defaults, the borrower's credit is **frozen** — `available = 0`, 
 
 ## Design Decisions
 
-### Why Two Agents Instead of One?
-Separation of concerns: the Treasury Agent optimizes yield without worrying about credit risk, while the Credit Agent focuses on scoring without yield pressure. Board Meetings create productive tension — the Treasury Agent might want to lock more capital in Aave, but the Credit Agent argues for lending reserves. This debate (powered by LLM) produces better allocation than a single-agent approach.
+### Why Three Agents Instead of One?
+Separation of concerns: the Treasury Agent optimizes yield without worrying about credit risk, the Credit Agent focuses on scoring without yield pressure, and the Risk Agent monitors systemic risk across both domains. Board Meetings create productive tension — the Treasury Agent might want to lock more capital in Aave, the Credit Agent argues for lending reserves, and the Risk Agent flags exposure limits. This three-way debate (powered by LLM) produces better allocation than a single-agent approach.
 
 ### Why On-Chain Credit Scoring?
 The credit formula (`500 + min(txCount*2, 200) + min(volume/100, 150) + repaidLoans*100 + min(age/10, 50) - defaults*200`) uses only publicly verifiable on-chain data. No off-chain oracles or trusted third parties. The score determines loan tier, amount cap, and interest rate autonomously.
 
 ### Why WDK + ethers.js Dual Approach?
-WDK is the **primary signer** for all write transactions — both Treasury and Credit operations go through WDK first (see `TransactionService.ts`). ethers.js is the **fallback signer** and handles read-only contract queries. The WDK address (`0xf39Fd...`) has `AGENT_ROLE` on both contracts (granted on-chain). This gives us native WDK wallet ops for the hackathon while keeping ethers.js as safety net.
+WDK is the **primary signer** for all write transactions — both Treasury and Credit operations go through WDK first (see `TransactionService.ts`). ethers.js is the **fallback signer** and handles read-only contract queries. The WDK address (`0xcF341c...`) has `AGENT_ROLE` + `EXECUTOR_ROLE` on both contracts (granted on-chain). This gives us native WDK wallet ops for the hackathon while keeping ethers.js as safety net.
 
 ### Why EventBus Instead of Direct Calls?
 Agents communicate through a pub/sub EventBus rather than direct method calls. This decouples them, enables WebSocket clients to observe all activity, and makes adding new subscribers (analytics, audit log, etc.) trivial.

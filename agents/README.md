@@ -17,5 +17,6 @@ agents/
 
 ## How agents communicate
 
-Both agents publish events through the backend EventBus.
+All three agents publish events through the backend EventBus.
 OpenClaw can orchestrate them via `sessions_send` (agent-to-agent).
+The Risk Agent participates in Board Meetings as an advisory voice — it does not execute transactions.
