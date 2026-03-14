@@ -587,16 +587,6 @@ WDK is the **primary signer** for all write transactions — both Treasury and C
 ### Why EventBus Instead of Direct Calls?
 Agents communicate through a pub/sub EventBus rather than direct method calls. This decouples them, enables WebSocket clients to observe all activity, and makes adding new subscribers (analytics, audit log, etc.) trivial.
 
-## Known Limitations
-
-- **Aave yield may fail on local Anvil fork** — `TreasuryVault: protocol not allowed` if Aave protocol address isn't allowlisted on-chain. Works correctly on Arbitrum One with proper setup.
-- **Dual persistence (JSON + SQLite)** — Agent state is persisted to both `backend/data/*.json` (backward compat) and `backend/data/agent-treasury.db` (SQLite WAL mode). SQLite provides ACID transactions, crash safety, and query capability. Check `GET /api/db/stats` for live table counts.
-- **Single-node deployment** — Not designed for horizontal scaling. One backend instance manages both agents.
-- **WDK address differs from deployer** — WDK derives `0xf39Fd...` while deployer is `0xE9a30...`. Both have `AGENT_ROLE` on-chain. WDK is primary signer, ethers is fallback.
-- **Deployed on Arbitrum One mainnet** — Production deployment with real USDt (16 USDt in vault).
-- **ZK proofs are hash-based** — Uses SHA-256 commitments + Fiat-Shamir, not zk-SNARKs. The verifier learns `delta = score - threshold` (bounding the score range). Full privacy would require Circom + snarkjs. Replay prevention is enforced via SQLite proof log.
-- **Groq rate limits** — Free tier has 100K tokens/day. Agents auto-fallback to deterministic logic on 429 errors.
-
 ## License
 
 MIT
