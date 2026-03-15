@@ -29,6 +29,8 @@ export function WalletConnect() {
 
   const checkConnection = async () => {
     if (window.ethereum) {
+      // Respect user's explicit disconnect
+      if (localStorage.getItem('wallet_disconnected') === 'true') return;
       try {
         const accounts = await window.ethereum.request({ method: 'eth_accounts' }) as string[];
         if (accounts && accounts.length > 0) {
@@ -62,6 +64,7 @@ export function WalletConnect() {
       }) as string[];
       if (accounts && accounts.length > 0) {
         setAddress(accounts[0]);
+        localStorage.removeItem('wallet_disconnected');
       }
     } catch (error) {
       console.error('Connection failed:', error);
@@ -71,6 +74,7 @@ export function WalletConnect() {
 
   const disconnect = () => {
     setAddress(null);
+    localStorage.setItem('wallet_disconnected', 'true');
   };
 
   const copyAddress = () => {
