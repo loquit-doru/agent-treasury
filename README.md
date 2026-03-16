@@ -1,6 +1,6 @@
 # AgentTreasury CORE
 
-**Autonomous CFO for DAOs** — Two AI agents that hold, lend, and manage USDt on-chain without human intervention.
+**Autonomous CFO for DAOs** — Three AI agents (Treasury, Credit, Risk) that hold, lend, and manage USDt on-chain without human intervention.
 
 Built for **Tether Hackathon Galáctica: WDK Edition 1** (March 2–22, 2026)
 
