@@ -668,7 +668,32 @@ export class TreasuryAgent {
       logger.debug('On-chain Aave V3 query failed', { err });
     }
 
-    // 3. No fallback — if no live on-chain data, return empty (no fake APY)
+    // 3. Compound V3 (Comet) on Arbitrum — real on-chain supply rate
+    try {
+      const arbCometAddress = '0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07'; // Compound V3 USDT Comet on Arbitrum
+      const cometAbi = [
+        'function getSupplyRate(uint256 utilization) view returns (uint64)',
+        'function getUtilization() view returns (uint256)',
+      ];
+      const comet = new ethers.Contract(arbCometAddress, cometAbi, this.provider);
+      const utilization = await comet.getUtilization();
+      const ratePerSec = Number(await comet.getSupplyRate(utilization));
+      const secsPerYear = 365.25 * 24 * 3600;
+      const compApy = Math.round(((1 + ratePerSec / 1e18) ** secsPerYear - 1) * 100 * 100) / 100;
+      if (compApy > 0 && compApy < 50) {
+        opportunities.push({
+          protocol: 'compound',
+          apy: compApy,
+          tvl: '0',
+          risk: 'low',
+        });
+        logger.info('Compound V3 on-chain yield data', { ratePerSec, apy: compApy });
+      }
+    } catch (err) {
+      logger.debug('On-chain Compound V3 query failed', { err });
+    }
+
+    // 4. No fallback — if no live on-chain data, return empty (no fake APY)
     if (opportunities.length === 0) {
       logger.info('No live yield data available — skipping yield investment this cycle');
     }

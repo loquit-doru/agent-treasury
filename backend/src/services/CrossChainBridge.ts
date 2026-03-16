@@ -47,9 +47,16 @@ export interface BridgeState {
   bestRemoteYield: CrossChainYield | null;
 }
 
+export interface ChainProtocolYield {
+  chain: string;
+  protocol: string;
+  apy: number;
+  pool: string;
+}
+
 export interface DemoShowcase {
   wallet: { address: string; usdtBalance: string; ethBalance: string };
-  chains: { chain: string; apy: number; aavePool: string }[];
+  chains: ChainProtocolYield[];
   bridgeQuote: { targetChain: string; fee: string; bridgeFee: string } | null;
   decision: {
     localApy: number;
@@ -287,13 +294,35 @@ export class CrossChainBridge {
     const remoteChains: BridgeChain[] = ['ethereum', 'polygon'];
     const candidates: CrossChainYield[] = [];
 
+    // Pre-check native ETH balance — if too low, skip on-chain quote to avoid
+    // eth_estimateGas "insufficient funds" errors (LayerZero requires msg.value).
+    let hasEnoughGas = false;
+    try {
+      const { ethers } = await import('ethers');
+      const provider = new ethers.JsonRpcProvider(process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc');
+      const ethBal = await provider.getBalance(walletAddress);
+      hasEnoughGas = ethBal > 50_000_000_000_000n; // > 0.00005 ETH (~$0.15)
+      if (!hasEnoughGas) {
+        logger.info('Low native ETH balance, skipping bridge quote (using estimate)', {
+          ethBalance: ethBal.toString(),
+        });
+      }
+    } catch {
+      // If balance check fails, still attempt quote
+      hasEnoughGas = true;
+    }
+
     for (const chain of remoteChains) {
       try {
         // Estimate bridge cost by quoting a reference amount (100 USDt)
-        const refAmount = 100_000000n; // 100 USDt
-        const quote = await this.quoteBridge(chain, refAmount, walletAddress, usdtAddress);
+        // Skip on-chain quote if wallet has insufficient native ETH for gas
+        let bridgeCostUsd = 5; // default estimate ~$5
 
-        const bridgeCostUsd = quote ? Number(quote.bridgeFee) / 1e18 * 2500 : 5; // rough ETH→USD
+        if (hasEnoughGas) {
+          const refAmount = 100_000000n; // 100 USDt
+          const quote = await this.quoteBridge(chain, refAmount, walletAddress, usdtAddress);
+          bridgeCostUsd = quote ? Number(quote.bridgeFee) / 1e18 * 2500 : 5; // rough ETH→USD
+        }
 
         // Fetch remote chain Aave APY
         // Note: This uses the WDK's registered protocol data when available.
@@ -347,78 +376,99 @@ export class CrossChainBridge {
   }
 
   /**
-   * Fetch remote chain Aave APY.
-   * Uses real on-chain queries when RPC is available, otherwise logs unavailability.
+   * Fetch all protocol APYs for a remote chain (Aave V3 + Compound V3).
+   * Returns array of { protocol, apy } — real on-chain queries only.
    */
-  private async fetchRemoteApy(chain: BridgeChain): Promise<number> {
-    // Known Aave V3 pool addresses per chain
+  private async fetchRemoteProtocolApys(chain: BridgeChain): Promise<{ protocol: string; apy: number; pool: string }[]> {
+    const results: { protocol: string; apy: number; pool: string }[] = [];
+    const { ethers } = await import('ethers');
+
+    const rpcEnv = chain === 'ethereum'
+      ? process.env.ETHEREUM_RPC_URL
+      : chain === 'polygon'
+        ? process.env.POLYGON_RPC_URL
+        : undefined;
+
+    if (!rpcEnv) {
+      logger.debug(`No RPC configured for ${chain}, skipping remote APY fetch`);
+      return results;
+    }
+
+    const provider = new ethers.JsonRpcProvider(rpcEnv);
+
+    // --- Aave V3 ---
     const aavePools: Record<string, string> = {
       ethereum: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
       polygon: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
     };
-
-    // Known USDt addresses per chain
     const usdtAddresses: Record<string, string> = {
       ethereum: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
       polygon: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
     };
-
-    const pool = aavePools[chain];
+    const aavePool = aavePools[chain];
     const usdt = usdtAddresses[chain];
-    if (!pool || !usdt) return 0;
-
-    // Use WDK's registered chain providers if available,
-    // otherwise return 0 (no fake data).
-    try {
-      // Dynamic import ethers for on-chain query
-      const { ethers } = await import('ethers');
-
-      // Try to get RPC from environment
-      const rpcEnv = chain === 'ethereum'
-        ? process.env.ETHEREUM_RPC_URL
-        : process.env.POLYGON_RPC_URL;
-
-      if (!rpcEnv) {
-        logger.debug(`No RPC configured for ${chain}, skipping remote APY fetch`);
-        return 0;
+    if (aavePool && usdt) {
+      try {
+        const poolAbi = [
+          `function getReserveData(address asset) view returns (
+            tuple(
+              uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate,
+              uint128 variableBorrowIndex, uint128 currentVariableBorrowRate,
+              uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id,
+              address aTokenAddress, address stableDebtTokenAddress,
+              address variableDebtTokenAddress, address interestRateStrategyAddress,
+              uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt
+            ) data
+          )`,
+        ];
+        const contract = new ethers.Contract(aavePool, poolAbi, provider);
+        const data = await contract.getReserveData(usdt);
+        const apy = Math.round(Number(data.currentLiquidityRate) / 1e25 * 100) / 100;
+        if (apy > 0 && apy < 50) {
+          results.push({ protocol: 'Aave V3', apy, pool: aavePool });
+          logger.info(`Remote ${chain} Aave V3 USDt APY: ${apy}%`);
+        }
+      } catch (err) {
+        logger.debug(`Failed to fetch ${chain} Aave V3 APY`, { err });
       }
-
-      const provider = new ethers.JsonRpcProvider(rpcEnv);
-      const poolAbi = [
-        `function getReserveData(address asset) view returns (
-          tuple(
-            uint256 configuration,
-            uint128 liquidityIndex,
-            uint128 currentLiquidityRate,
-            uint128 variableBorrowIndex,
-            uint128 currentVariableBorrowRate,
-            uint128 currentStableBorrowRate,
-            uint40 lastUpdateTimestamp,
-            uint16 id,
-            address aTokenAddress,
-            address stableDebtTokenAddress,
-            address variableDebtTokenAddress,
-            address interestRateStrategyAddress,
-            uint128 accruedToTreasury,
-            uint128 unbacked,
-            uint128 isolationModeTotalDebt
-          ) data
-        )`,
-      ];
-      const contract = new ethers.Contract(pool, poolAbi, provider);
-      const data = await contract.getReserveData(usdt);
-      const rawRate = Number(data.currentLiquidityRate);
-      const apy = rawRate / 1e25;
-
-      if (apy > 0 && apy < 50) {
-        logger.info(`Remote ${chain} Aave USDt APY: ${apy.toFixed(2)}%`);
-        return Math.round(apy * 100) / 100;
-      }
-    } catch (err) {
-      logger.debug(`Failed to fetch ${chain} Aave APY on-chain`, { err });
     }
 
-    return 0;
+    // --- Compound V3 (Comet) ---
+    // Compound V3 USDT Comet markets (mainnet)
+    const compoundComets: Record<string, { comet: string; usdt: string }> = {
+      ethereum: { comet: '0x3Afdc9BCA9213A35503b077a6072F3D0d5AB0840', usdt: '0xdAC17F958D2ee523a2206206994597C13D831ec7' },
+      polygon: { comet: '0xaeB318360f27748Acb200CE616E389A6C9409a07', usdt: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F' },
+    };
+    const cometCfg = compoundComets[chain];
+    if (cometCfg) {
+      try {
+        const cometAbi = [
+          'function getSupplyRate(uint256 utilization) view returns (uint64)',
+          'function getUtilization() view returns (uint256)',
+        ];
+        const comet = new ethers.Contract(cometCfg.comet, cometAbi, provider);
+        const utilization = await comet.getUtilization();
+        const ratePerSec = Number(await comet.getSupplyRate(utilization));
+        // Compound V3 rate is per-second, scaled by 1e18. APY = (1 + rate)^seconds_per_year - 1
+        const secsPerYear = 365.25 * 24 * 3600;
+        const apy = Math.round(((1 + ratePerSec / 1e18) ** secsPerYear - 1) * 100 * 100) / 100;
+        if (apy > 0 && apy < 50) {
+          results.push({ protocol: 'Compound V3', apy, pool: cometCfg.comet });
+          logger.info(`Remote ${chain} Compound V3 USDt APY: ${apy}%`);
+        }
+      } catch (err) {
+        logger.debug(`Failed to fetch ${chain} Compound V3 APY`, { err });
+      }
+    }
+
+    return results;
+  }
+
+  /** Backward-compat: best APY across all protocols on a chain */
+  private async fetchRemoteApy(chain: BridgeChain): Promise<number> {
+    const protocols = await this.fetchRemoteProtocolApys(chain);
+    if (protocols.length === 0) return 0;
+    return Math.max(...protocols.map(p => p.apy));
   }
 
   /**
@@ -468,36 +518,58 @@ export class CrossChainBridge {
       provider.getBalance(walletAddress),
     ]);
 
-    // 2. APY per chain (real on-chain Aave queries)
-    const chains: DemoShowcase['chains'] = [];
-    const aaveConfigs: Record<string, { pool: string; usdt: string; rpcEnv: string }> = {
-      arbitrum: { pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', usdt: usdtAddress, rpcEnv: 'https://arb1.arbitrum.io/rpc' },
-      ethereum: { pool: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2', usdt: '0xdAC17F958D2ee523a2206206994597C13D831ec7', rpcEnv: process.env.ETHEREUM_RPC_URL || '' },
-      polygon: { pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD', usdt: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F', rpcEnv: process.env.POLYGON_RPC_URL || '' },
-    };
+    // 2. APY per chain × protocol (real on-chain Aave V3 + Compound V3 queries)
+    const chains: ChainProtocolYield[] = [];
 
-    for (const [chain, cfg] of Object.entries(aaveConfigs)) {
-      if (!cfg.rpcEnv) { chains.push({ chain, apy: 0, aavePool: cfg.pool }); continue; }
-      try {
-        const p = new ethers.JsonRpcProvider(cfg.rpcEnv);
-        const poolAbi = [
-          `function getReserveData(address asset) view returns (
-            tuple(
-              uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate,
-              uint128 variableBorrowIndex, uint128 currentVariableBorrowRate,
-              uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id,
-              address aTokenAddress, address stableDebtTokenAddress,
-              address variableDebtTokenAddress, address interestRateStrategyAddress,
-              uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt
-            ) data
-          )`,
-        ];
-        const contract = new ethers.Contract(cfg.pool, poolAbi, p);
-        const data = await contract.getReserveData(cfg.usdt);
-        const apy = Math.round(Number(data.currentLiquidityRate) / 1e25 * 100) / 100;
-        chains.push({ chain, apy, aavePool: cfg.pool });
-      } catch {
-        chains.push({ chain, apy: 0, aavePool: cfg.pool });
+    // Arbitrum (local) — Aave V3
+    try {
+      const arbPool = '0x794a61358D6845594F94dc1DB02A252b5b4814aD';
+      const poolAbi = [
+        `function getReserveData(address asset) view returns (
+          tuple(
+            uint256 configuration, uint128 liquidityIndex, uint128 currentLiquidityRate,
+            uint128 variableBorrowIndex, uint128 currentVariableBorrowRate,
+            uint128 currentStableBorrowRate, uint40 lastUpdateTimestamp, uint16 id,
+            address aTokenAddress, address stableDebtTokenAddress,
+            address variableDebtTokenAddress, address interestRateStrategyAddress,
+            uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt
+          ) data
+        )`,
+      ];
+      const arbAave = new ethers.Contract(arbPool, poolAbi, provider);
+      const arbData = await arbAave.getReserveData(usdtAddress);
+      const arbApy = Math.round(Number(arbData.currentLiquidityRate) / 1e25 * 100) / 100;
+      chains.push({ chain: 'arbitrum', protocol: 'Aave V3', apy: arbApy, pool: arbPool });
+    } catch {
+      chains.push({ chain: 'arbitrum', protocol: 'Aave V3', apy: 0, pool: '0x794a61358D6845594F94dc1DB02A252b5b4814aD' });
+    }
+
+    // Arbitrum — Compound V3
+    try {
+      const arbComet = '0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07';
+      const cometAbi = [
+        'function getSupplyRate(uint256 utilization) view returns (uint64)',
+        'function getUtilization() view returns (uint256)',
+      ];
+      const comet = new ethers.Contract(arbComet, cometAbi, provider);
+      const util = await comet.getUtilization();
+      const ratePerSec = Number(await comet.getSupplyRate(util));
+      const secsPerYear = 365.25 * 24 * 3600;
+      const arbCompApy = Math.round(((1 + ratePerSec / 1e18) ** secsPerYear - 1) * 100 * 100) / 100;
+      chains.push({ chain: 'arbitrum', protocol: 'Compound V3', apy: arbCompApy, pool: arbComet });
+    } catch {
+      chains.push({ chain: 'arbitrum', protocol: 'Compound V3', apy: 0, pool: '0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07' });
+    }
+
+    // Remote chains (Ethereum, Polygon) — both protocols
+    for (const chain of ['ethereum', 'polygon'] as BridgeChain[]) {
+      const protocols = await this.fetchRemoteProtocolApys(chain);
+      if (protocols.length > 0) {
+        for (const p of protocols) {
+          chains.push({ chain, protocol: p.protocol, apy: p.apy, pool: p.pool });
+        }
+      } else {
+        chains.push({ chain, protocol: 'Aave V3', apy: 0, pool: '' });
       }
     }
 
@@ -510,8 +582,11 @@ export class CrossChainBridge {
       }
     } catch { /* quote may fail if balance too low — that's ok for demo */ }
 
-    // 4. Decision logic
-    const localApy = chains.find(c => c.chain === 'arbitrum')?.apy ?? 0;
+    // 4. Decision logic — best local APY across all Arbitrum protocols
+    const localCandidates = chains.filter(c => c.chain === 'arbitrum' && c.apy > 0);
+    const localApy = localCandidates.length > 0
+      ? Math.max(...localCandidates.map(c => c.apy))
+      : 0;
     const remoteCandidates = chains.filter(c => c.chain !== 'arbitrum' && c.apy > 0);
     const best = remoteCandidates.length > 0
       ? remoteCandidates.reduce((a, b) => a.apy > b.apy ? a : b)
@@ -521,9 +596,9 @@ export class CrossChainBridge {
 
     let reason: string;
     if (!best) reason = 'No remote chain APY data available';
-    else if (advantage < MIN_APY_ADVANTAGE) reason = `APY advantage (${advantage.toFixed(2)}%) below minimum threshold (${MIN_APY_ADVANTAGE}%)`;
+    else if (advantage < MIN_APY_ADVANTAGE) reason = `APY advantage (${advantage.toFixed(2)}%) below minimum threshold (${MIN_APY_ADVANTAGE}%). Best remote: ${best.protocol} on ${best.chain} at ${best.apy}%, best local: ${localApy}%`;
     else if (usdtBal < MIN_BRIDGE_AMOUNT) reason = `Wallet balance (${ethers.formatUnits(usdtBal, 6)} USDt) below min bridge amount (${ethers.formatUnits(MIN_BRIDGE_AMOUNT, 6)} USDt)`;
-    else reason = `Would bridge to ${best.chain} for +${advantage.toFixed(2)}% APY advantage`;
+    else reason = `Would bridge to ${best.chain} (${best.protocol}) for +${advantage.toFixed(2)}% APY advantage`;
 
     return {
       wallet: {
@@ -536,7 +611,7 @@ export class CrossChainBridge {
       decision: {
         localApy,
         bestRemoteApy: best?.apy ?? 0,
-        bestRemoteChain: best?.chain ?? 'none',
+        bestRemoteChain: best ? `${best.chain} (${best.protocol})` : 'none',
         apyAdvantage: Math.round(advantage * 100) / 100,
         minRequired: MIN_APY_ADVANTAGE,
         wouldBridge,
