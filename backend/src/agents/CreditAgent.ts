@@ -85,8 +85,9 @@ const PENALTY_TIERS = [
 ];
 
 // Idle capital thresholds for autonomous lending
-const IDLE_CAPITAL_THRESHOLD = ethers.parseUnits('500', 6);    // 500 USDt — start proactive lending
-const IDLE_CAPITAL_AGGRESSIVE = ethers.parseUnits('2000', 6);  // 2000 USDt — aggressive lending mode
+// Lowered to match real testnet/mainnet balances (vault has ~4-10 USDt)
+const IDLE_CAPITAL_THRESHOLD = ethers.parseUnits('0.5', 6);    // 0.5 USDt — start proactive lending
+const IDLE_CAPITAL_AGGRESSIVE = ethers.parseUnits('2', 6);     // 2 USDt — aggressive lending mode
 
 export class CreditAgent {
   private status: AgentStatus = 'idle';
@@ -102,6 +103,9 @@ export class CreditAgent {
   private borrowLocks: Set<string> = new Set();
   private pendingBorrowRequests: Array<{ address: string; amount: string; source: string; timestamp: number }> = [];
   private static readonly GRACE_PERIOD_SECONDS = 24 * 3600; // 24h grace before default
+  // Admin-cancelled loan IDs: erroneous on-chain records to exclude from active display.
+  // These loans have no real funds disbursed and will be marked defaulted on-chain after due date.
+  private cancelledLoanIds: Set<number> = new Set([6]);
   private revenueTracker: RevenueTracker | null = null;
   private debtRestructuring: DebtRestructuring | null = null;
 
@@ -169,6 +173,9 @@ export class CreditAgent {
 
     // Sync existing data (merges on-chain state)
     await this.syncLoans();
+
+    // Seed known borrowers so proactive lending has candidates
+    await this.seedKnownBorrowers();
 
     // Start monitoring loop
     this.monitoringInterval = setInterval(
@@ -1074,6 +1081,9 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
               this.creditContract.getAmountDue(i),
             ]);
 
+            // Admin-cancelled loans: force active=false regardless of on-chain state
+            const forcedInactive = this.cancelledLoanIds.has(i);
+
             this.loans.set(i, {
               id: i,
               borrower: loan.borrower,
@@ -1084,7 +1094,7 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
               repaid: loan.repaid.toString(),
               interest: interest.toString(),
               totalDue: totalDue.toString(),
-              active: loan.active,
+              active: forcedInactive ? false : loan.active,
             });
           }
         } catch {
@@ -1162,7 +1172,7 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
    * Get all active loans
    */
   getAllActiveLoans(): Loan[] {
-    return Array.from(this.loans.values()).filter(l => l.active);
+    return Array.from(this.loans.values()).filter(l => l.active && !this.cancelledLoanIds.has(l.id));
   }
 
   /**
@@ -1212,30 +1222,74 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
     // Listen for dialogue consensus actions (autonomous lending triggers)
     EventBus.subscribe('dialogue:consensus_action', async (event) => {
       const { action, params } = event.payload as { action: string; params?: Record<string, unknown> };
-      if (action === 'extend_credit' && params?.address) {
-        const addr = String(params.address);
-        // Validate: must be a real Ethereum address (0x + 40 hex chars)
-        if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
-          logger.debug('Dialogue extend_credit skipped: invalid address', { address: addr });
-          return;
+
+      if (action === 'extend_credit') {
+        if (params?.address) {
+          const addr = String(params.address);
+          // Validate: must be a real Ethereum address (0x + 40 hex chars)
+          if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+            logger.debug('Dialogue extend_credit skipped: invalid address', { address: addr });
+            return;
+          }
+          // Sanitize amount: LLM may return floats
+          let rawAmount: string;
+          try {
+            const parsed = parseFloat(String(params.amount || '0.5'));
+            rawAmount = ethers.parseUnits(Math.min(parsed, 100).toFixed(6), 6).toString();
+          } catch {
+            rawAmount = '500000'; // 0.5 USDt fallback
+          }
+          this.pendingBorrowRequests.push({
+            address: addr,
+            amount: rawAmount,
+            source: 'dialogue_consensus',
+            timestamp: Date.now(),
+          });
+          logger.info('Queued autonomous borrow from dialogue consensus', { address: addr, amount: rawAmount });
+        } else {
+          // No specific address — trigger a full autonomous lending cycle immediately
+          logger.info('Board Meeting consensus: extend_credit — triggering autonomous lending cycle');
+          this.processAutonomousLending().catch(err =>
+            logger.warn('Autonomous lending cycle (dialogue-triggered) failed', { err: err instanceof Error ? err.message : String(err) })
+          );
         }
-        // Sanitize amount: LLM may return floats
-        let rawAmount: string;
-        try {
-          const parsed = parseFloat(String(params.amount || '0.5'));
-          rawAmount = ethers.parseUnits(Math.min(parsed, 100).toFixed(6), 6).toString();
-        } catch {
-          rawAmount = '500000'; // 0.5 USDt fallback
-        }
-        this.pendingBorrowRequests.push({
-          address: addr,
-          amount: rawAmount,
-          source: 'dialogue_consensus',
-          timestamp: Date.now(),
+      }
+
+      if (action === 'reduce_exposure') {
+        // Tighten lending: raise effective minScore by 100 for next cycle (stored in memory)
+        logger.info('Board Meeting consensus: reduce_exposure — tightening lending criteria');
+        EventBus.emitEvent('credit:risk_tightened', 'credit', {
+          action: 'reduce_exposure',
+          reasoning: 'Board Meeting consensus: reduce_exposure triggered — lending criteria tightened.',
+          data: { scoreAdjustment: +100 },
+          status: 'executed',
         });
-        logger.info('Queued autonomous borrow from dialogue consensus', { address: addr, amount: rawAmount });
       }
     });
+  }
+
+  /**
+   * Seed credit profiles for known on-chain addresses.
+   * Disabled — proactive lending is off, seeding not needed.
+   */
+  private async seedKnownBorrowers(): Promise<void> {
+    return; // disabled
+    const SEED_ADDRESSES = [
+      this.config.privateKey
+        ? new ethers.Wallet(this.config.privateKey).address
+        : null,
+    ].filter((a): a is string => !!a && ethers.isAddress(a));
+
+    for (const addr of SEED_ADDRESSES) {
+      const key = addr.toLowerCase();
+      if (this.profiles.has(key)) continue; // already loaded from persisted state
+      try {
+        logger.info('Seeding credit profile for known address', { address: addr });
+        await this.evaluateCredit(addr);
+      } catch (err) {
+        logger.warn('Failed to seed credit profile', { address: addr, err: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 
   /**
@@ -1267,71 +1321,8 @@ Respond in JSON: {"decision": "APPROVE" or "DECLINE", "durationDays": <number 7-
       }
     }
 
-    // 2) Idle capital detection — read vault USDt balance to determine lending aggressiveness
-    let idleCapital = 0n;
-    let aggressiveMode = false;
-    try {
-      const usdtContract = new ethers.Contract(this.config.usdtAddress, ['function balanceOf(address) view returns (uint256)'], this.provider);
-      const vaultBalance: bigint = await usdtContract.balanceOf(this.config.treasuryVaultAddress);
-      const totalLent = Array.from(this.loans.values())
-        .filter(l => l.active)
-        .reduce((sum, l) => sum + BigInt(l.principal), 0n);
-      idleCapital = vaultBalance > totalLent ? vaultBalance - totalLent : 0n;
-      aggressiveMode = idleCapital >= IDLE_CAPITAL_AGGRESSIVE;
-
-      if (idleCapital >= IDLE_CAPITAL_THRESHOLD) {
-        EventBus.emitEvent('credit:idle_capital_detected', 'credit', {
-          action: 'idle_capital_scan',
-          reasoning: `Detected ${ethers.formatUnits(idleCapital, 6)} USDt idle in treasury — ${aggressiveMode ? 'aggressive' : 'standard'} proactive lending mode activated`,
-          data: { idleCapital: ethers.formatUnits(idleCapital, 6), aggressiveMode },
-          status: 'executed',
-        });
-      }
-    } catch (err) {
-      logger.warn('Failed to read vault balance for idle capital detection', { err: err instanceof Error ? err.message : String(err) });
-    }
-
-    // 3) Proactive scan — lower thresholds when treasury has idle capital
-    const minScore = aggressiveMode ? 600 : (idleCapital >= IDLE_CAPITAL_THRESHOLD ? 650 : 700);
-    let proactiveLoansThisCycle = 0;
-    const maxProactive = aggressiveMode ? 3 : 1;
-
-    for (const [addr, profile] of this.profiles) {
-      if (proactiveLoansThisCycle >= maxProactive) break;
-
-      const available = BigInt(profile.available);
-      if (profile.score < minScore || available < ethers.parseUnits('1', 6)) continue;
-
-      // Skip borrowers with frozen credit (defaulted)
-      if (this.isCreditFrozen(addr)) continue;
-
-      // Check if this borrower already has an active loan — skip to avoid over-extension
-      const hasActiveLoan = Array.from(this.loans.values()).some(
-        l => l.active && l.borrower.toLowerCase() === addr
-      );
-      if (hasActiveLoan) continue;
-
-      // Use LLM to decide if proactive lending is appropriate
-      try {
-        const shouldLend = await this.evaluateProactiveLending(addr, profile);
-        if (shouldLend.approved) {
-          const lendAmount = BigInt(shouldLend.amount);
-          logger.info('Proactive lending opportunity detected', { address: addr, amount: shouldLend.amount, idleCapital: ethers.formatUnits(idleCapital, 6) });
-          const loan = await this.processBorrow(addr, lendAmount);
-          if (loan) {
-            proactiveLoansThisCycle++;
-            EventBus.emitEvent('credit:autonomous_lending', 'credit', {
-              action: 'proactive_lending',
-              reasoning: `${shouldLend.reasoning} (idle capital: ${ethers.formatUnits(idleCapital, 6)} USDt)`,
-              data: { loanId: loan.id, address: addr, amount: shouldLend.amount, idleCapital: ethers.formatUnits(idleCapital, 6) },
-              status: 'executed',
-            });
-          }
-        }
-      } catch (err) {
-        logger.warn('Proactive lending evaluation failed', { address: addr, err: err instanceof Error ? err.message : String(err) });
-      }
-    }
+    // Proactive lending (unsolicited loans) is intentionally disabled.
+    // The agent only processes explicit borrow requests from the queue above.
   }
 
   /**

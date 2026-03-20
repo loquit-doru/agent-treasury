@@ -469,6 +469,22 @@ contract CreditLine is ReentrancyGuard, AccessControl {
     }
     
     /**
+     * @dev Admin-only: cancel a loan regardless of due date (e.g. erroneous phantom loans).
+     * No funds are moved — just closes the on-chain record and frees credit.
+     */
+    function adminCancelLoan(uint256 loanId) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        Loan storage loan = loans[loanId];
+        require(loan.active, "CreditLine: loan not active");
+
+        loan.active = false;
+
+        CreditProfile storage profile = profiles[loan.borrower];
+        profile.borrowed -= loan.principal;
+
+        emit LoanDefaulted(loanId, loan.borrower, 0);
+    }
+
+    /**
      * @dev Update treasury vault address
      */
     function setTreasuryVault(address _treasuryVault) external onlyAgent {

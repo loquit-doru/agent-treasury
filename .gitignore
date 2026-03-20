@@ -66,7 +66,15 @@ dashboard_dump.json
 .state/
 .state_backfill/
 backend/data/
-S6As3.jpg
+
+# Junk images & archives
+*.jpg
+*.zip
+clean_revenue.json
+
+# Deploy scripts (contain creds)
+deploy-remote.ps1
+ops/
 
 # Internal docs / hackathon artifacts
 HACKATHON_PLAN.md

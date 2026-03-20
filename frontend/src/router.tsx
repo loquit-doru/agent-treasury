@@ -4,6 +4,7 @@ import Landing from './pages/Landing';
 import Dashboard from './pages/Dashboard';
 import WalletPage from './pages/WalletPage';
 import Analytics from './pages/Analytics';
+import CrossChain from './pages/CrossChain';
 
 export const router = createBrowserRouter([
   {
@@ -25,6 +26,10 @@ export const router = createBrowserRouter([
       {
         path: 'analytics',
         element: <Analytics />,
+      },
+      {
+        path: 'cross-chain',
+        element: <CrossChain />,
       },
     ],
   },

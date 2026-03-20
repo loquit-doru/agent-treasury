@@ -52,6 +52,7 @@ const TREASURY_VAULT_ABI = [
   'function signTransaction(bytes32 txHash)',
   'function executeWithdrawal(bytes32 txHash)',
   'function investInYield(address protocol, uint256 amount, uint256 apy)',
+  'function deposit(uint256 amount)',
   'function harvestYield(address protocol, uint256 expectedAmount)',
   'function emergencyPause()',
   'function emergencyUnpause()',
@@ -59,6 +60,13 @@ const TREASURY_VAULT_ABI = [
   'event WithdrawProposed(bytes32 indexed txHash, address indexed to, uint256 amount, uint256 executeAfter)',
   'event WithdrawExecuted(bytes32 indexed txHash, address indexed to, uint256 amount)',
 ];
+
+const ERC20_ABI = [
+  'function balanceOf(address account) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+];
+
+const ERC20_IFACE = new ethers.Interface(ERC20_ABI);
 
 // Security constraints
 const CONSTRAINTS = {
@@ -238,16 +246,18 @@ export class TreasuryAgent {
           if (accountData) {
             const totalCollateral = BigInt(accountData.totalCollateralBase.toString());
             // totalCollateralBase is in USD (8 decimals on Aave V3)
+            // pos.amount is in USDT (6 decimals) — normalize collateral to 6 dec
+            const totalCollateral6 = totalCollateral / 100n; // 8 dec → 6 dec
             // Compute total principal invested
             const totalPrincipal = this.yieldPositions.reduce(
               (sum, p) => sum + BigInt(p.amount), 0n
             );
             // aToken balance growth = real yield accrued on-chain
-            if (totalCollateral > 0n && totalPrincipal > 0n) {
+            if (totalCollateral6 > 0n && totalPrincipal > 0n) {
               // Distribute proportionally across positions
               for (const pos of this.yieldPositions) {
                 const posPrincipal = BigInt(pos.amount);
-                const posShare = (totalCollateral * posPrincipal) / totalPrincipal;
+                const posShare = (totalCollateral6 * posPrincipal) / totalPrincipal;
                 const yieldAccrued = posShare > posPrincipal ? posShare - posPrincipal : 0n;
                 pos.harvested = yieldAccrued.toString();
               }
@@ -372,6 +382,11 @@ export class TreasuryAgent {
         await this.scanCrossChainYield();
         await new Promise(r => setTimeout(r, 3000));
       }
+
+      // Sweep any USDt sitting in WDK wallet into the vault
+      await this.sweepWalletToVault();
+
+      await new Promise(r => setTimeout(r, 3000));
 
       // Check pending transactions
       await this.checkPendingTransactions();
@@ -520,25 +535,28 @@ export class TreasuryAgent {
   async evaluateYieldOpportunities(): Promise<void> {
     try {
       const opportunities = await this.fetchYieldOpportunities();
-      
-      if (opportunities.length === 0) {
+
+      // Only consider protocols that have a valid on-chain address (whitelisted in vault)
+      const investable = this.filterInvestableOpportunities(opportunities);
+
+      if (investable.length === 0) {
         EventBus.emitEvent('treasury:yield_analysis', 'treasury', {
           action: 'yield_scan',
-          reasoning: 'No yield opportunities available in current market — holding idle cash position.',
-          data: { protocols_scanned: 0 },
+          reasoning: `No investable yield opportunities — ${opportunities.length} found but none whitelisted in vault.`,
+          data: { protocols_scanned: opportunities.length },
           status: 'executed',
         });
         return;
       }
 
       // Use LLM to evaluate opportunities
-      const bestOpportunity = await this.selectBestYieldStrategy(opportunities);
+      const bestOpportunity = await this.selectBestYieldStrategy(investable);
       
       if (!bestOpportunity) {
         EventBus.emitEvent('treasury:yield_analysis', 'treasury', {
           action: 'yield_analysis',
           reasoning: 'Scanned yield protocols but no opportunity meets risk/return threshold. Maintaining capital preservation stance.',
-          data: { protocols_scanned: opportunities.length, opportunities: opportunities.map(o => `${o.protocol}:${o.apy}%`) },
+          data: { protocols_scanned: investable.length, opportunities: investable.map(o => `${o.protocol}:${o.apy}%`) },
           status: 'executed',
         });
         return;
@@ -547,14 +565,14 @@ export class TreasuryAgent {
       // Emit the yield analysis decision with LLM reasoning
       EventBus.emitEvent('treasury:yield_analysis', 'treasury', {
         action: 'yield_analysis',
-        reasoning: `Evaluated ${opportunities.length} protocols. Best: ${bestOpportunity.protocol} at ${bestOpportunity.apy}% APY (risk: ${bestOpportunity.risk}). Checking allocation thresholds.`,
+        reasoning: `Evaluated ${investable.length} protocols. Best: ${bestOpportunity.protocol} at ${bestOpportunity.apy}% APY (risk: ${bestOpportunity.risk}). Checking allocation thresholds.`,
         data: { selected: bestOpportunity.protocol, apy: bestOpportunity.apy, risk: bestOpportunity.risk },
         status: 'executed',
       });
 
       // Check if we should invest
       const balance = BigInt(this.lastState?.balance || '0');
-      const minInvestment = ethers.parseUnits('100', 6); // Min 100 USDt
+      const minInvestment = ethers.parseUnits('0.5', 6); // Min 0.5 USDt — works with testnet/small balances
 
       if (balance < minInvestment) {
         logger.debug('Insufficient balance for yield farming');
@@ -938,11 +956,11 @@ Respond in JSON: {"protocol": "<name or null>", "reasoning": "<1-2 sentences>"}`
 
     // Check balance
     const balance = BigInt(this.lastState?.balance || '0');
-    if (balance < ethers.parseUnits('1000', 6)) {
+    if (balance < ethers.parseUnits('1', 6)) {
       factors.push({
         name: 'low_balance',
         impact: -20,
-        description: 'Treasury balance below 1000 USDt',
+        description: 'Treasury balance below 1 USDt',
       });
       score -= 20;
     }
@@ -1201,8 +1219,65 @@ Respond in JSON: {"adjustment": <-20 to +10>, "factors": [{"name": "<id>", "desc
     const addresses: Record<string, string> = {
       aave: this.config.aavePoolAddress || ethers.ZeroAddress,
     };
-    
-    return addresses[protocol] || ethers.ZeroAddress;
+
+    return addresses[protocol.toLowerCase()] || ethers.ZeroAddress;
+  }
+
+  /**
+   * Filter yield opportunities to only those with a valid on-chain protocol address.
+   * Prevents investing in protocols not whitelisted in the TreasuryVault contract.
+   */
+  private filterInvestableOpportunities(opportunities: YieldOpportunity[]): YieldOpportunity[] {
+    return opportunities.filter(o => {
+      const addr = this.getProtocolAddress(o.protocol);
+      return addr !== ethers.ZeroAddress;
+    });
+  }
+
+  /**
+   * Sweep any USDt balance sitting in the WDK wallet into the Treasury Vault.
+   * Runs every monitor cycle — no-op if wallet is empty.
+   */
+  private async sweepWalletToVault(): Promise<void> {
+    try {
+      const walletAddress = await this.wdkAccount.getAddress();
+      const usdt = new ethers.Contract(this.config.usdtAddress, ERC20_ABI, this.provider);
+      const walletBalance: bigint = await usdt.balanceOf(walletAddress);
+
+      const MIN_SWEEP = ethers.parseUnits('0.01', 6); // 0.01 USDt minimum
+      if (walletBalance < MIN_SWEEP) return;
+
+      logger.info('Sweeping WDK wallet USDt into vault', {
+        wallet: walletAddress,
+        amount: ethers.formatUnits(walletBalance, 6),
+      });
+
+      // 1. Approve vault to spend the USDt
+      const approveData = ERC20_IFACE.encodeFunctionData('approve', [
+        this.config.treasuryVaultAddress,
+        walletBalance,
+      ]);
+      await this.sendTx(this.config.usdtAddress, approveData, 'approve-for-sweep');
+
+      // 2. Deposit into vault
+      const depositData = VAULT_IFACE.encodeFunctionData('deposit', [walletBalance]);
+      const txHash = await this.sendTx(this.config.treasuryVaultAddress, depositData, 'sweep-deposit');
+
+      const amount = ethers.formatUnits(walletBalance, 6);
+      EventBus.emitEvent('treasury:sweep', 'treasury', {
+        action: 'wallet_sweep',
+        reasoning: `Swept ${amount} USDt from WDK wallet (${walletAddress}) into treasury vault.`,
+        data: { wallet: walletAddress, amount, txHash },
+        txHash,
+        status: 'executed',
+      });
+
+      logger.info('Wallet sweep complete', { amount, txHash });
+    } catch (err) {
+      logger.warn('Wallet sweep failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

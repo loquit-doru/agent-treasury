@@ -371,7 +371,7 @@ export default function Dashboard() {
               {healthData?.breakdown && (
                 <div className="flex gap-3 mt-2 text-[10px] text-gray-500">
                   {Object.entries(healthData.breakdown).slice(0, 4).map(([key, val]) => (
-                    <span key={key} className="capitalize">{key.replace(/_/g, ' ')}: {Math.round(val.score * 100)}%</span>
+                    <span key={key} className="capitalize">{key.replace(/_/g, ' ')}: {Math.round(val.score)}%</span>
                   ))}
                 </div>
               )}

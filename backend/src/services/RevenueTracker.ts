@@ -74,26 +74,19 @@ export class RevenueTracker {
 
   /** Wire EventBus listeners for automatic revenue tracking */
   private setupListeners(): void {
-    // Yield harvests → revenue event
+    // Yield harvests → revenue event (only on-chain confirmed, with txHash)
     EventBus.subscribe('treasury:yield_harvested', (event) => {
-      const { amount, protocol } = event.payload as { amount: string; protocol?: string };
-      // WDK agent address is the recipient of yield
+      const payload = event.payload as { amount?: string; protocol?: string; txHash?: string; expectedAmount?: string };
+      // Only record if there's a real on-chain txHash — skip off-chain fallbacks
+      if (!payload.txHash) return;
+      const amount = payload.expectedAmount ?? payload.amount;
+      if (!amount) return;
       this.recordRevenue({
         agentAddress: 'treasury',
         amount,
         source: 'yield_harvest',
-        description: `Yield harvested from ${protocol || 'DeFi protocol'}`,
-      });
-    });
-
-    // Inter-agent payments
-    EventBus.subscribe('treasury:capital_allocated', (event) => {
-      const { allocatedAmount } = event.payload as { allocatedAmount: string };
-      this.recordRevenue({
-        agentAddress: 'credit',
-        amount: allocatedAmount,
-        source: 'inter_agent_payment',
-        description: 'Capital allocation from Treasury Agent',
+        description: `Yield harvested from ${payload.protocol || 'DeFi protocol'}`,
+        txHash: payload.txHash,
       });
     });
 
@@ -166,7 +159,7 @@ export class RevenueTracker {
     const agentEvents = this.events.filter(e => e.agentAddress === agentAddress);
 
     const sum = (ms: number) => agentEvents
-      .filter(e => now - e.timestamp < ms)
+      .filter(e => now - e.timestamp < ms && e.amount != null)
       .reduce((s, e) => s + BigInt(e.amount), 0n);
 
     const revenue24h = sum(24 * 3600_000);
@@ -179,8 +172,8 @@ export class RevenueTracker {
       now - e.timestamp >= 7 * 24 * 3600_000 &&
       now - e.timestamp < 14 * 24 * 3600_000
     );
-    const recentSum = recent7d.reduce((s, e) => s + Number(BigInt(e.amount)), 0);
-    const prevSum = prev7d.reduce((s, e) => s + Number(BigInt(e.amount)), 0);
+    const recentSum = recent7d.filter(e => e.amount != null).reduce((s, e) => s + Number(BigInt(e.amount)), 0);
+    const prevSum = prev7d.filter(e => e.amount != null).reduce((s, e) => s + Number(BigInt(e.amount)), 0);
     const velocity = prevSum === 0
       ? (recentSum > 0 ? 1 : 0)
       : Math.max(-1, Math.min(1, (recentSum - prevSum) / Math.max(prevSum, 1)));
@@ -276,7 +269,7 @@ export class RevenueTracker {
   } {
     const agents = new Set(this.events.map(e => e.agentAddress));
     const profiles = Array.from(agents).map(a => this.getProfile(a));
-    const totalRevenue = this.events.reduce((s, e) => s + BigInt(e.amount), 0n);
+    const totalRevenue = this.events.filter(e => e.amount != null).reduce((s, e) => s + BigInt(e.amount), 0n);
 
     return {
       totalRevenue: totalRevenue.toString(),

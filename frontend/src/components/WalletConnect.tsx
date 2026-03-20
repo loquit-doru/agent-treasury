@@ -14,15 +14,23 @@ export function WalletConnect() {
     // Check if already connected
     checkConnection();
     
-    // Listen for account changes
+    // Listen for account changes (try/catch for MetaMask compatibility)
     if (window.ethereum) {
-      window.ethereum.on('accountsChanged', handleAccountsChanged);
-      window.ethereum.on('chainChanged', () => window.location.reload());
+      try {
+        window.ethereum.on('accountsChanged', handleAccountsChanged);
+        window.ethereum.on('chainChanged', () => window.location.reload());
+      } catch {
+        // MetaMask newer versions may not support .on()
+      }
     }
 
     return () => {
       if (window.ethereum) {
-        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        try {
+          window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        } catch {
+          // ignore
+        }
       }
     };
   }, []);
@@ -46,7 +54,7 @@ export function WalletConnect() {
     const accs = accounts as string[];
     if (accs.length === 0) {
       setAddress(null);
-    } else {
+    } else if (localStorage.getItem('wallet_disconnected') !== 'true') {
       setAddress(accs[0]);
     }
   };
